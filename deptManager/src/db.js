@@ -218,17 +218,28 @@ export const registerUserInFirebase = async (email, password, username, name) =>
 };
 
 export const loginUserInFirebase = async (loginIdentifier, password) => {
-  let email = loginIdentifier.toLowerCase().trim();
+  const identifier = loginIdentifier.toLowerCase().trim();
+  let email = identifier;
 
-  // If it's a username (doesn't contain '@'), look up their email in Firestore
-  if (!email.includes('@')) {
-    const q = query(collection(db, 'users'), where('username', '==', email));
-    const querySnapshot = await getDocs(q);
-    if (querySnapshot.empty) {
-      throw new Error('Benutzername nicht gefunden.');
-    }
+  // 1. Try to find the user in Firestore by username first
+  let q = query(collection(db, 'users'), where('username', '==', identifier));
+  let querySnapshot = await getDocs(q);
+
+  if (querySnapshot.empty) {
+    // 2. If not found by username, try to find by email
+    q = query(collection(db, 'users'), where('email', '==', identifier));
+    querySnapshot = await getDocs(q);
+  }
+
+  // 3. If found in Firestore, extract the email
+  if (!querySnapshot.empty) {
     const userDoc = querySnapshot.docs[0];
     email = userDoc.data().email || `${userDoc.data().username}@bozen.com`;
+  } else {
+    // If not found in Firestore at all, we still check if they entered a username format without '@'
+    if (!identifier.includes('@')) {
+      throw new Error('Benutzername nicht gefunden.');
+    }
   }
 
   try {
