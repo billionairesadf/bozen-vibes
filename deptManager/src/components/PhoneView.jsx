@@ -527,6 +527,9 @@ export default function PhoneView({ defaultUser, phoneName }) {
   };
 
   const handleLogout = async () => {
+    const confirmLogout = window.confirm('Möchtest du dich wirklich abmelden?');
+    if (!confirmLogout) return;
+
     try {
       await logoutUser();
     } catch (err) {
