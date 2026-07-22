@@ -1,0 +1,38 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // User profiles - authenticated users can read/write profiles
+    match /users/{userId} {
+      allow read, write: if request.auth != null;
+
+      // User contacts - only the owner can read/write their contacts
+      match /contacts/{contactId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
+    }
+    
+    // Debts tracking
+    match /debts/{debtId} {
+      // Enforce that the creator is the authenticated user, and is one of the participants
+      allow create: if request.auth != null && 
+        request.auth.token.email == request.resource.data.creatorEmail &&
+        (request.auth.token.email == request.resource.data.creditorEmail || 
+         request.auth.token.email == request.resource.data.debtorEmail);
+         
+      // Allow participants to read the debts
+      allow read: if request.auth != null && 
+        (request.auth.token.email == resource.data.creditorEmail || 
+         request.auth.token.email == resource.data.debtorEmail);
+         
+      // Enforce that only the creator of the debt can update or delete it
+      allow update, delete: if request.auth != null && 
+        request.auth.token.email == resource.data.creatorEmail;
+    }
+
+    // Collection Group rule for contacts - allows users to see who added them as a contact
+    match /{path=**}/contacts/{contactId} {
+      allow read: if request.auth != null && request.auth.token.email == resource.data.email;
+    }
+  }
+}

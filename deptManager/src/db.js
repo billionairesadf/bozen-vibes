@@ -6,7 +6,8 @@ import {
   signOut,
   onAuthStateChanged,
   RecaptchaVerifier,
-  signInWithPhoneNumber
+  signInWithPhoneNumber,
+  sendEmailVerification
 } from 'firebase/auth';
 import { 
   getFirestore, 
@@ -19,7 +20,8 @@ import {
   getDocs, 
   onSnapshot,
   query,
-  where
+  where,
+  deleteDoc
 } from 'firebase/firestore';
 
 // SDK configuration for Firebase project
@@ -39,6 +41,7 @@ export const db = getFirestore(app);
 // In-Memory cache for synchronous component state read calls
 let cacheUsers = {};
 let cacheTransactions = [];
+let cacheFriendRequests = [];
 const subscribers = new Set();
 
 const notifySubscribers = () => {
@@ -48,6 +51,7 @@ const notifySubscribers = () => {
 // Listeners unsubscribe references
 let usersUnsubscribe = null;
 let debtsUnsubscribe = null;
+let friendRequestsUnsubscribe = null;
 
 // Track Auth State and attach/detach Firestore listeners dynamically
 onAuthStateChanged(auth, (user) => {
@@ -76,6 +80,17 @@ onAuthStateChanged(auth, (user) => {
         notifySubscribers();
       });
     }
+
+    if (!friendRequestsUnsubscribe) {
+      friendRequestsUnsubscribe = onSnapshot(collection(db, 'friendRequests'), (snapshot) => {
+        const reqs = [];
+        snapshot.forEach(doc => {
+          reqs.push({ id: doc.id, ...doc.data() });
+        });
+        cacheFriendRequests = reqs;
+        notifySubscribers();
+      });
+    }
   } else {
     // User is logged out, stop sync and clear cache
     if (usersUnsubscribe) {
@@ -86,8 +101,13 @@ onAuthStateChanged(auth, (user) => {
       debtsUnsubscribe();
       debtsUnsubscribe = null;
     }
+    if (friendRequestsUnsubscribe) {
+      friendRequestsUnsubscribe();
+      friendRequestsUnsubscribe = null;
+    }
     cacheUsers = {};
     cacheTransactions = [];
+    cacheFriendRequests = [];
     notifySubscribers();
   }
 });
@@ -114,6 +134,14 @@ export const getTransactionHistory = (currentUserId, friendId) => {
     (tx.lenderId === cId && tx.borrowerId === fId) || 
     (tx.lenderId === fId && tx.borrowerId === cId)
   );
+};
+
+export const getAllTransactionsForUser = (userId) => {
+  if (!userId) return [];
+  const myUid = userId.toLowerCase().trim();
+  return cacheTransactions
+    .filter(tx => tx.lenderId === myUid || tx.borrowerId === myUid)
+    .sort((a, b) => b.timestamp - a.timestamp);
 };
 
 export const getBalanceBetween = (currentUserId, friendId) => {
@@ -209,6 +237,13 @@ export const registerUserInFirebase = async (email, password, username, name) =>
   try {
     const userCredential = await createUserWithEmailAndPassword(auth, normalizedEmail, password);
     user = userCredential.user;
+    
+    // Send email verification immediately
+    try {
+      await sendEmailVerification(user);
+    } catch (emailErr) {
+      console.error('Verifizierungs-E-Mail konnte nicht gesendet werden:', emailErr);
+    }
   } catch (err) {
     throw new Error('Registrierung fehlgeschlagen: ' + err.message);
   }
@@ -263,12 +298,20 @@ export const loginOrCreateUser = async (username, password, name = '') => {
   }
 };
 
-export const addFriend = async (userId, friendUsername) => {
-  const targetName = friendUsername.toLowerCase().trim();
+export const sendFriendRequest = async (userId, targetUsernameOrEmail) => {
+  const target = targetUsernameOrEmail.toLowerCase().trim();
+  if (!target) {
+    throw new Error('Eingabe darf nicht leer sein.');
+  }
+
   const users = getUsers();
-  const friend = Object.values(users).find(usr => usr.username === targetName);
+  // Find recipient user profile by username or email
+  const friend = Object.values(users).find(usr => 
+    usr.username === target || (usr.email && usr.email.toLowerCase().trim() === target)
+  );
+
   if (!friend) {
-    throw new Error(`Benutzer @${friendUsername} existiert nicht.`);
+    throw new Error(`Benutzer '${targetUsernameOrEmail}' wurde nicht gefunden.`);
   }
 
   const currentUserObj = Object.values(users).find(usr => usr.id === userId);
@@ -276,19 +319,71 @@ export const addFriend = async (userId, friendUsername) => {
     throw new Error('Aktueller Benutzer nicht gefunden.');
   }
 
-  if (currentUserObj.friends.includes(targetName)) {
-    throw new Error(`@${friendUsername} ist bereits in deiner Freundesliste.`);
+  if (friend.id === userId) {
+    throw new Error('Du kannst dir nicht selbst eine Freundschaftsanfrage senden.');
   }
 
-  // Update current user's friends list
-  const updatedFriendsSelf = [...currentUserObj.friends, targetName];
-  await updateDoc(doc(db, 'users', userId), { friends: updatedFriendsSelf });
-
-  // Update friend's friends list to make it mutual
-  if (!friend.friends.includes(currentUserObj.username)) {
-    const updatedFriendsFriend = [...friend.friends, currentUserObj.username];
-    await updateDoc(doc(db, 'users', friend.id), { friends: updatedFriendsFriend });
+  // Check if already friends
+  if (currentUserObj.friends && currentUserObj.friends.includes(friend.username)) {
+    throw new Error(`@${friend.username} ist bereits in deiner Freundesliste.`);
   }
+
+  // Check if there is already an existing pending request
+  const existingRequest = cacheFriendRequests.find(req => 
+    (req.from === currentUserObj.username && req.to === friend.username && req.status === 'pending') ||
+    (req.from === friend.username && req.to === currentUserObj.username && req.status === 'pending')
+  );
+
+  if (existingRequest) {
+    if (existingRequest.from === currentUserObj.username) {
+      throw new Error(`Ausstehende Anfrage an @${friend.username} bereits vorhanden.`);
+    } else {
+      throw new Error(`@${friend.username} hat dir bereits eine Anfrage gesendet. Bitte nimm sie an.`);
+    }
+  }
+
+  // Create friend request doc
+  const requestDoc = {
+    from: currentUserObj.username,
+    to: friend.username,
+    status: 'pending',
+    timestamp: Date.now()
+  };
+
+  await addDoc(collection(db, 'friendRequests'), requestDoc);
+};
+
+export const acceptFriendRequest = async (requestId) => {
+  const req = cacheFriendRequests.find(r => r.id === requestId);
+  if (!req) {
+    throw new Error('Freundschaftsanfrage nicht gefunden.');
+  }
+
+  const users = getUsers();
+  const fromUser = Object.values(users).find(u => u.username === req.from);
+  const toUser = Object.values(users).find(u => u.username === req.to);
+
+  if (!fromUser || !toUser) {
+    throw new Error('Benutzerprofile für diese Anfrage konnten nicht gefunden werden.');
+  }
+
+  // 1. Update friends list for both users (mutual friendship)
+  const updatedFriendsFrom = [...(fromUser.friends || []), toUser.username];
+  const updatedFriendsTo = [...(toUser.friends || []), fromUser.username];
+
+  await updateDoc(doc(db, 'users', fromUser.id), { friends: updatedFriendsFrom });
+  await updateDoc(doc(db, 'users', toUser.id), { friends: updatedFriendsTo });
+
+  // 2. Delete the request document to clean up
+  await deleteDoc(doc(db, 'friendRequests', requestId));
+};
+
+export const rejectFriendRequest = async (requestId) => {
+  await deleteDoc(doc(db, 'friendRequests', requestId));
+};
+
+export const getFriendRequests = () => {
+  return cacheFriendRequests;
 };
 
 export const addTransaction = async (lenderId, borrowerId, amount, description, imageUrl = null, status = 'pending', createdBy = null) => {

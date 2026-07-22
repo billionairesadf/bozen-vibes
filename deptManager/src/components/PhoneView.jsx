@@ -3,16 +3,16 @@ import {
   ArrowLeft, Plus, Minus, LogOut, Search, UserPlus, 
   Clock, ArrowRightLeft, Send, Check, Lock, User, 
   X, ChevronRight, Landmark, ArrowUpRight, ArrowDownLeft,
-  Home, MessageCircle, UserCircle, Settings
+  Home, MessageCircle, UserCircle, Settings, History
 } from 'lucide-react';
 import { 
-  auth, loginOrCreateUser, addFriend, getFriendsForUser, 
+  auth, loginOrCreateUser, sendFriendRequest, acceptFriendRequest, rejectFriendRequest, getFriendRequests, getFriendsForUser, 
   getBalanceBetween, getTransactionHistory, addTransaction, 
   subscribeToDB, getUsers, confirmTransaction, rejectTransaction, logoutUser,
   registerUserInFirebase, loginUserInFirebase, checkUsernameUnique, createUserProfile,
-  getPendingConfirmations, updateUserProfile
+  getPendingConfirmations, updateUserProfile, getAllTransactionsForUser
 } from '../db';
-import { RecaptchaVerifier, signInWithPhoneNumber, onAuthStateChanged } from 'firebase/auth';
+import { RecaptchaVerifier, signInWithPhoneNumber, onAuthStateChanged, sendEmailVerification } from 'firebase/auth';
 // Google AdSense Global Configuration
 const GOOGLE_ADSENSE_PUBLISHER_ID = 'ca-pub-6041979504682770'; // Deine Google AdSense Publisher-ID
 const GOOGLE_ADSENSE_SLOT_ID = '1234567890'; // Ersetze dies mit deiner echten Slot-ID aus deinem AdSense-Dashboard
@@ -33,17 +33,7 @@ const formatBalance = (amount, status) => {
   return formatted;
 };
 
-// Returns a relevant image URL based on keywords in the description
-const getPhotoByDescription = (desc) => {
-  const lower = desc.toLowerCase();
-  if (lower.includes('pizza')) return 'https://images.unsplash.com/photo-1513104890138-7c749659a591?w=400&auto=format&fit=crop&q=80';
-  if (lower.includes('kaffee') || lower.includes('coffee') || lower.includes('caf') || lower.includes('cappuccino')) return 'https://images.unsplash.com/photo-1509042239860-f550ce710b93?w=400&auto=format&fit=crop&q=80';
-  if (lower.includes('kino') || lower.includes('cinema') || lower.includes('film') || lower.includes('ticket') || lower.includes('popcorn')) return 'https://images.unsplash.com/photo-1517604931442-7e0c8ed2963c?w=400&auto=format&fit=crop&q=80';
-  if (lower.includes('taxi') || lower.includes('uber') || lower.includes('fahrt') || lower.includes('auto')) return 'https://images.unsplash.com/photo-1492664738948-2ec93a5c0942?w=400&auto=format&fit=crop&q=80';
-  if (lower.includes('bier') || lower.includes('beer') || lower.includes('drink') || lower.includes('bar') || lower.includes('cocktail') || lower.includes('club') || lower.includes('wein') || lower.includes('party') || lower.includes('alkohol')) return 'https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?w=400&auto=format&fit=crop&q=80';
-  // Default receipt image mockup
-  return 'https://images.unsplash.com/photo-1554415707-6e8cfc93fe23?w=400&auto=format&fit=crop&q=80';
-};
+
 
 // Helper to resize/crop an uploaded image file client-side to a square 150x150 JPEG
 const resizeImage = (file, size = 150) => {
@@ -139,11 +129,15 @@ export default function PhoneView({ defaultUser, phoneName }) {
 
   // States
   const [currentUser, setCurrentUser] = useState(null);
-  const [currentScreen, setCurrentScreen] = useState('auth'); // 'auth' | 'dashboard' | 'chat'
+  const [currentScreen, setCurrentScreen] = useState('auth'); // 'auth' | 'dashboard' | 'chat' | 'settings' | 'history'
+  const [emailVerified, setEmailVerified] = useState(false);
+  const [resendCooldown, setResendCooldown] = useState(0);
   const [selectedFriend, setSelectedFriend] = useState(null);
+  const [historyFilter, setHistoryFilter] = useState('all'); // 'all' | 'credit' | 'debt' | 'pending' | 'confirmed'
+  const [historySearch, setHistorySearch] = useState('');
   
   // Auth Form
-  const [authMethod, setAuthMethod] = useState('phone'); // 'phone' | 'email'
+  const [authMethod, setAuthMethod] = useState('email'); // 'phone' | 'email'
   const [isRegisterMode, setIsRegisterMode] = useState(false);
   const [authUsername, setAuthUsername] = useState('');
   const [authEmail, setAuthEmail] = useState('');
@@ -184,10 +178,7 @@ export default function PhoneView({ defaultUser, phoneName }) {
   const [toastMessage, setToastMessage] = useState('');
   const [toastTimeout, setToastTimeout] = useState(null);
   const [statsExpanded, setStatsExpanded] = useState(true); // Default stats open to display nicely
-  const [cameraActive, setCameraActive] = useState(false);
-  const [cameraFlash, setCameraFlash] = useState(false);
-  const [cameraProcessing, setCameraProcessing] = useState(false);
-  const [attachedImage, setAttachedImage] = useState(false);
+  const [attachedImage, setAttachedImage] = useState(null);
   const [lightboxImage, setLightboxImage] = useState(null);
   // Settings Form States
   const [settingsName, setSettingsName] = useState('');
@@ -226,11 +217,22 @@ export default function PhoneView({ defaultUser, phoneName }) {
   }, [currentScreen, currentUser]);
 
 
+  // Cooldown timer for email verification resend
+  useEffect(() => {
+    if (resendCooldown > 0) {
+      const timer = setTimeout(() => setResendCooldown(resendCooldown - 1), 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [resendCooldown]);
+
   // Listen to Firebase Auth state initialization
   useEffect(() => {
     const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
-      if (!user) {
+      if (user) {
+        setEmailVerified(user.emailVerified);
+      } else {
         setAuthInitialized(true);
+        setEmailVerified(false);
       }
     });
     return unsubscribeAuth;
@@ -249,7 +251,12 @@ export default function PhoneView({ defaultUser, phoneName }) {
         const userProfile = Object.values(users).find(u => u.id === firebaseUser.uid);
         if (userProfile) {
           setCurrentUser(userProfile);
-          setCurrentScreen('dashboard');
+          setEmailVerified(firebaseUser.emailVerified);
+          if (firebaseUser.emailVerified || !firebaseUser.email) {
+            setCurrentScreen('dashboard');
+          } else {
+            setCurrentScreen('dashboard');
+          }
           setAuthInitialized(true);
         }
       } else if (currentUser) {
@@ -314,6 +321,7 @@ export default function PhoneView({ defaultUser, phoneName }) {
       try {
         const user = await registerUserInFirebase(authEmail, authPassword, authUsername, authName);
         setCurrentUser(user);
+        setEmailVerified(false);
         setCurrentScreen('dashboard');
         // Reset form
         setAuthUsername('');
@@ -337,6 +345,7 @@ export default function PhoneView({ defaultUser, phoneName }) {
       try {
         const user = await loginUserInFirebase(authUsername, authPassword);
         setCurrentUser(user);
+        setEmailVerified(auth.currentUser?.emailVerified || false);
         setCurrentScreen('dashboard');
         // Reset form
         setAuthUsername('');
@@ -345,6 +354,53 @@ export default function PhoneView({ defaultUser, phoneName }) {
         setAuthPassword('');
       } catch (err) {
         setAuthError(err.message);
+      }
+    }
+  };
+
+  const handleLogoutFromVerify = async () => {
+    try {
+      await logoutUser();
+    } catch (err) {
+      console.error('Logout failed', err);
+    }
+    setCurrentUser(null);
+    setCurrentScreen('auth');
+    setSelectedFriend(null);
+  };
+
+  const handleCheckEmailVerification = async () => {
+    if (auth.currentUser) {
+      try {
+        await auth.currentUser.reload();
+        const verified = auth.currentUser.emailVerified;
+        setEmailVerified(verified);
+        if (verified) {
+          setToastMessage("E-Mail erfolgreich verifiziert! 🎉");
+          setShowToast(true);
+        } else {
+          setToastMessage("E-Mail ist noch nicht verifiziert. Bitte überprüfe dein Postfach.");
+          setShowToast(true);
+        }
+      } catch (err) {
+        console.error("Reload user failed", err);
+        setToastMessage("Fehler beim Aktualisieren: " + err.message);
+        setShowToast(true);
+      }
+    }
+  };
+
+  const handleResendVerification = async () => {
+    if (auth.currentUser) {
+      try {
+        await sendEmailVerification(auth.currentUser);
+        setToastMessage("Verifizierungs-E-Mail wurde erneut gesendet. ✉️");
+        setShowToast(true);
+        setResendCooldown(60);
+      } catch (err) {
+        console.error("Resend verification failed", err);
+        setToastMessage("Fehler beim Senden: " + err.message);
+        setShowToast(true);
       }
     }
   };
@@ -540,23 +596,40 @@ export default function PhoneView({ defaultUser, phoneName }) {
     setSelectedFriend(null);
   };
 
-  const handleAddFriend = async (e) => {
-    e.preventDefault();
+  const handleAddFriend = async (e, usernameOrEmailOverride = '') => {
+    if (e) e.preventDefault();
     setFriendError('');
     setFriendSuccess(false);
 
-    if (!newFriendUsername.trim()) {
-      setFriendError('Benutzername erforderlich.');
+    const target = usernameOrEmailOverride || newFriendUsername;
+    if (!target.trim()) {
+      setFriendError('Benutzername oder E-Mail erforderlich.');
       return;
     }
 
     try {
-      await addFriend(currentUser.id, newFriendUsername);
+      await sendFriendRequest(currentUser.id, target);
       setFriendSuccess(true);
       setNewFriendUsername('');
       setTimeout(() => setFriendSuccess(false), 3000);
     } catch (err) {
       setFriendError(err.message);
+    }
+  };
+
+  const handleConfirmFriendRequest = async (requestId) => {
+    try {
+      await acceptFriendRequest(requestId);
+    } catch (err) {
+      alert('Fehler beim Akzeptieren der Anfrage: ' + err.message);
+    }
+  };
+
+  const handleRejectFriendRequest = async (requestId) => {
+    try {
+      await rejectFriendRequest(requestId);
+    } catch (err) {
+      alert('Fehler beim Ablehnen der Anfrage: ' + err.message);
     }
   };
 
@@ -587,7 +660,7 @@ export default function PhoneView({ defaultUser, phoneName }) {
       return;
     }
 
-    const finalImgUrl = attachedImage ? getPhotoByDescription(txDescription) : null;
+    const finalImgUrl = attachedImage || null;
 
     try {
       if (sheetType === 'lend') {
@@ -650,7 +723,7 @@ export default function PhoneView({ defaultUser, phoneName }) {
 
     const divisor = splitFriends.length + (splitIncludeSelf ? 1 : 0);
     const shareAmount = parsedAmount / divisor;
-    const finalImgUrl = attachedImage ? getPhotoByDescription(splitDescription) : null;
+    const finalImgUrl = attachedImage || null;
 
     try {
       // Loop through all selected friends and record the lending transaction in Firestore
@@ -694,18 +767,19 @@ export default function PhoneView({ defaultUser, phoneName }) {
     setToastTimeout(timeout);
   };
 
-  const handleSnapPhoto = () => {
-    setCameraFlash(true);
-    setCameraProcessing(true);
-    setTimeout(() => {
-      setCameraFlash(false);
-    }, 300);
-    
-    setTimeout(() => {
-      setAttachedImage(true);
-      setCameraProcessing(false);
-      setCameraActive(false);
-    }, 1800); // 1.8 seconds simulated snap/processing
+
+
+  const handlePhotoUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    try {
+      // Resize to 400x400 for receipt readability
+      const base64Img = await resizeImage(file, 400);
+      setAttachedImage(base64Img);
+    } catch (err) {
+      alert('Fehler beim Laden des Bildes: ' + err.message);
+    }
   };
 
   const handleConfirmTx = (txId) => {
@@ -727,52 +801,6 @@ export default function PhoneView({ defaultUser, phoneName }) {
   // --- Render Sub-Views ---
 
   const renderAuthScreen = () => {
-    // Phone completion step is a full card
-    if (authMethod === 'phone' && phoneStep === 'profile') {
-      return (
-        <div className="auth-container">
-          <div className="auth-header">
-            <div className="auth-logo">👤</div>
-            <h2 className="auth-title">Profil vervollständigen</h2>
-            <p className="auth-subtitle">Wähle deinen Benutzernamen, um fortzufahren.</p>
-          </div>
-
-          <form onSubmit={handleCompletePhoneProfile} className="auth-form">
-            {authError && <div className="error-banner">{authError}</div>}
-
-            <div className="input-wrapper">
-              <label className="input-label">Benutzername (eindeutig)</label>
-              <input 
-                type="text" 
-                placeholder="z.B. max" 
-                className="input-field"
-                value={authUsername}
-                onChange={(e) => setAuthUsername(e.target.value)}
-                required
-              />
-            </div>
-
-            <div className="input-wrapper">
-              <label className="input-label">Vollständiger Name</label>
-              <input 
-                type="text" 
-                placeholder="z.B. Max Mustermann" 
-                className="input-field"
-                value={authName}
-                onChange={(e) => setAuthName(e.target.value)}
-                required
-              />
-            </div>
-
-            <button type="submit" className="btn-primary" style={{ marginTop: '0.85rem' }}>
-              <Check size={18} />
-              Profil erstellen &amp; starten
-            </button>
-          </form>
-        </div>
-      );
-    }
-
     return (
       <div className="auth-container">
         <div className="auth-header">
@@ -781,177 +809,140 @@ export default function PhoneView({ defaultUser, phoneName }) {
           <p className="auth-subtitle">Einfach. Schnell. Transparent.</p>
         </div>
 
-        {/* Tab Selection */}
-        <div className="mode-toggle-group" style={{ marginBottom: '1.25rem', width: '100%', padding: '2px', background: 'rgba(255,255,255,0.03)', borderRadius: '12px' }}>
-          <button 
-            type="button"
-            className={`mode-btn ${authMethod === 'phone' ? 'active' : ''}`}
-            onClick={() => { setAuthMethod('phone'); setAuthError(''); }}
-            style={{ flex: 1, padding: '0.5rem', fontSize: '0.8rem', borderRadius: '10px' }}
-          >
-            📱 Handynummer
-          </button>
-          <button 
-            type="button"
-            className={`mode-btn ${authMethod === 'email' ? 'active' : ''}`}
-            onClick={() => { setAuthMethod('email'); setAuthError(''); }}
-            style={{ flex: 1, padding: '0.5rem', fontSize: '0.8rem', borderRadius: '10px' }}
-          >
-            ✉️ E-Mail
-          </button>
-        </div>
-
-        {authMethod === 'phone' ? (
-          /* --- PHONE AUTH FORM --- */
-          <form onSubmit={phoneStep === 'phone' ? handleSendSMS : handleVerifySMS} className="auth-form">
-            {authError && <div className="error-banner">{authError}</div>}
-
-            {phoneStep === 'phone' ? (
-              <>
-                <div className="input-wrapper">
-                  <label className="input-label">Deine Handynummer</label>
-                  <input 
-                    type="tel" 
-                    placeholder="z.B. +491701234567" 
-                    className="input-field"
-                    value={authPhone}
-                    onChange={(e) => setAuthPhone(e.target.value)}
-                    required
-                  />
-                </div>
-                
-                <button type="submit" className="btn-primary" style={{ marginTop: '0.85rem' }}>
-                  <Send size={16} />
-                  SMS-Code senden
-                </button>
-              </>
-            ) : (
-              <>
-                <div className="input-wrapper">
-                  <label className="input-label">6-stelliger SMS-Code</label>
-                  <input 
-                    type="text" 
-                    placeholder="123456" 
-                    className="input-field"
-                    value={authSMSCode}
-                    onChange={(e) => setAuthSMSCode(e.target.value)}
-                    maxLength={6}
-                    required
-                  />
-                </div>
-                
-                <button type="submit" className="btn-primary" style={{ marginTop: '0.85rem' }}>
-                  <Check size={16} />
-                  Code verifizieren
-                </button>
-
-                <button 
-                  type="button" 
-                  className="auth-switch-btn" 
-                  onClick={() => setPhoneStep('phone')} 
-                  style={{ marginTop: '0.75rem', width: '100%', textAlign: 'center', fontSize: '0.75rem' }}
-                >
-                  Zurück zur Nummerneingabe
-                </button>
-              </>
-            )}
-
-            {/* reCAPTCHA anchor container (Invisible but required) */}
-            <div id="recaptcha-container"></div>
-          </form>
-        ) : (
-          /* --- EMAIL AUTH FORM --- */
-          <>
-            <form onSubmit={handleAuth} className="auth-form">
-              {authError && <div className="error-banner">{authError}</div>}
-              
-              {isRegisterMode ? (
-                <>
-                  <div className="input-wrapper animate-fade-in">
-                    <label className="input-label">E-Mail</label>
-                    <input 
-                      type="email" 
-                      placeholder="name@beispiel.com" 
-                      className="input-field"
-                      value={authEmail}
-                      onChange={(e) => setAuthEmail(e.target.value)}
-                      required
-                    />
-                  </div>
-                  
-                  <div className="input-wrapper animate-fade-in">
-                    <label className="input-label">Benutzername (eindeutig)</label>
-                    <input 
-                      type="text" 
-                      placeholder="z.B. alice" 
-                      className="input-field"
-                      value={authUsername}
-                      onChange={(e) => setAuthUsername(e.target.value)}
-                      required
-                    />
-                  </div>
-
-                  <div className="input-wrapper animate-fade-in">
-                    <label className="input-label">Vollständiger Name</label>
-                    <input 
-                      type="text" 
-                      placeholder="z.B. Alice Smith" 
-                      className="input-field"
-                      value={authName}
-                      onChange={(e) => setAuthName(e.target.value)}
-                      required
-                    />
-                  </div>
-                </>
-              ) : (
-                <div className="input-wrapper">
-                  <label className="input-label">Benutzername oder E-Mail</label>
-                  <input 
-                    type="text" 
-                    placeholder="z.B. alice oder alice@bozen.com" 
-                    className="input-field"
-                    value={authUsername}
-                    onChange={(e) => setAuthUsername(e.target.value)}
-                    required
-                  />
-                </div>
-              )}
-
-              <div className="input-wrapper">
-                <label className="input-label">Passwort</label>
+        <form onSubmit={handleAuth} className="auth-form">
+          {authError && <div className="error-banner">{authError}</div>}
+          
+          {isRegisterMode ? (
+            <>
+              <div className="input-wrapper animate-fade-in">
+                <label className="input-label">E-Mail</label>
                 <input 
-                  type="password" 
-                  placeholder="••••••••" 
+                  type="email" 
+                  placeholder="name@beispiel.com" 
                   className="input-field"
-                  value={authPassword}
-                  onChange={(e) => setAuthPassword(e.target.value)}
+                  value={authEmail}
+                  onChange={(e) => setAuthEmail(e.target.value)}
+                  required
+                />
+              </div>
+              
+              <div className="input-wrapper animate-fade-in">
+                <label className="input-label">Benutzername (eindeutig)</label>
+                <input 
+                  type="text" 
+                  placeholder="z.B. alice" 
+                  className="input-field"
+                  value={authUsername}
+                  onChange={(e) => setAuthUsername(e.target.value)}
                   required
                 />
               </div>
 
-              <button type="submit" className="btn-primary" style={{ marginTop: '0.85rem' }}>
-                <Lock size={18} />
-                {isRegisterMode ? 'Konto erstellen' : 'Anmelden'}
-              </button>
-            </form>
-
-            <div className="auth-switch">
-              {isRegisterMode ? 'Bereits ein Konto?' : 'Noch kein Konto?'}
-              <button 
-                className="auth-switch-btn"
-                onClick={() => {
-                  setIsRegisterMode(!isRegisterMode);
-                  setAuthError('');
-                }}
-              >
-                {isRegisterMode ? 'Anmelden' : 'Registrieren'}
-              </button>
+              <div className="input-wrapper animate-fade-in">
+                <label className="input-label">Vollständiger Name</label>
+                <input 
+                  type="text" 
+                  placeholder="z.B. Alice Smith" 
+                  className="input-field"
+                  value={authName}
+                  onChange={(e) => setAuthName(e.target.value)}
+                  required
+                />
+              </div>
+            </>
+          ) : (
+            <div className="input-wrapper">
+              <label className="input-label">Benutzername oder E-Mail</label>
+              <input 
+                type="text" 
+                placeholder="z.B. alice oder alice@bozen.com" 
+                className="input-field"
+                value={authUsername}
+                onChange={(e) => setAuthUsername(e.target.value)}
+                required
+              />
             </div>
-          </>
-        )}
+          )}
+
+          <div className="input-wrapper">
+            <label className="input-label">Passwort</label>
+            <input 
+              type="password" 
+              placeholder="••••••••" 
+              className="input-field"
+              value={authPassword}
+              onChange={(e) => setAuthPassword(e.target.value)}
+              required
+            />
+          </div>
+
+          <button type="submit" className="btn-primary" style={{ marginTop: '0.85rem' }}>
+            <Lock size={18} />
+            {isRegisterMode ? 'Konto erstellen' : 'Anmelden'}
+          </button>
+        </form>
+
+        <div className="auth-switch">
+          {isRegisterMode ? 'Bereits ein Konto?' : 'Noch kein Konto?'}
+          <button 
+            className="auth-switch-btn"
+            onClick={() => {
+              setIsRegisterMode(!isRegisterMode);
+              setAuthError('');
+            }}
+          >
+            {isRegisterMode ? 'Anmelden' : 'Registrieren'}
+          </button>
+        </div>
         
         {/* Safe reCAPTCHA anchor container (Outside conditional block) */}
         <div id="recaptcha-container"></div>
+      </div>
+    );
+  };
+
+  const renderVerifyEmailScreen = () => {
+    return (
+      <div className="auth-container animate-fade-in" style={{ padding: '2rem' }}>
+        <div className="auth-header" style={{ marginBottom: '1.75rem' }}>
+          <div className="auth-logo" style={{ fontSize: '2.5rem', marginBottom: '1rem', background: 'rgba(99, 102, 241, 0.1)', width: '70px', height: '70px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '20px', margin: '0 auto 1rem auto', border: '1px solid rgba(99, 102, 241, 0.2)', color: '#6366f1' }}>✉️</div>
+          <h2 className="auth-title" style={{ fontSize: '1.5rem', fontWeight: 700, marginBottom: '0.5rem', fontFamily: 'var(--font-heading)' }}>E-Mail bestätigen</h2>
+          <p className="auth-subtitle" style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: '1.5' }}>
+            Wir haben eine Bestätigungs-E-Mail an <strong style={{ color: 'var(--text-primary)' }}>{auth.currentUser?.email}</strong> gesendet.<br />Bitte bestätige dein Konto, um fortzufahren.
+          </p>
+        </div>
+
+        <div className="auth-form" style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+          <button 
+            type="button" 
+            className="btn-primary" 
+            onClick={handleCheckEmailVerification}
+            style={{ width: '100%', height: '46px', gap: '0.5rem' }}
+          >
+            <Check size={18} />
+            Ich habe meine E-Mail bestätigt
+          </button>
+
+          <button 
+            type="button" 
+            className="btn-secondary" 
+            onClick={handleResendVerification}
+            disabled={resendCooldown > 0}
+            style={{ width: '100%', height: '46px', background: 'rgba(255, 255, 255, 0.03)', color: 'var(--text-primary)', border: '1px solid var(--border-glass)', cursor: resendCooldown > 0 ? 'not-allowed' : 'pointer' }}
+          >
+            {resendCooldown > 0 ? `Erneut senden in ${resendCooldown}s` : "E-Mail erneut senden"}
+          </button>
+
+          <button 
+            type="button" 
+            className="btn-secondary" 
+            onClick={handleLogoutFromVerify}
+            style={{ width: '100%', height: '46px', marginTop: '0.5rem', background: 'rgba(239, 68, 68, 0.08)', color: '#ef4444', border: '1px solid rgba(239, 68, 68, 0.15)', gap: '0.5rem' }}
+          >
+            <LogOut size={16} />
+            Abmelden
+          </button>
+        </div>
       </div>
     );
   };
@@ -1081,6 +1072,186 @@ export default function PhoneView({ defaultUser, phoneName }) {
     );
   };
 
+  const renderHistoryScreen = () => {
+    const allTxs = getAllTransactionsForUser(currentUser?.id);
+
+    const filteredTxs = allTxs.filter(tx => {
+      // 1. Search filter
+      const isLender = tx.lenderId.toLowerCase() === currentUser?.id.toLowerCase();
+      const otherUserId = isLender ? tx.borrowerId : tx.lenderId;
+      const otherUser = Object.values(getUsers()).find(u => u.id.toLowerCase() === otherUserId.toLowerCase());
+      const name = (otherUser?.name || '').toLowerCase();
+      const username = (otherUser?.username || '').toLowerCase();
+      const desc = (tx.description || '').toLowerCase();
+      const query = historySearch.toLowerCase().trim();
+      
+      const matchesSearch = name.includes(query) || username.includes(query) || desc.includes(query);
+      if (!matchesSearch) return false;
+
+      // 2. Type filter
+      if (historyFilter === 'all') return true;
+      if (historyFilter === 'credit') return tx.lenderId.toLowerCase() === currentUser?.id.toLowerCase();
+      if (historyFilter === 'debt') return tx.borrowerId.toLowerCase() === currentUser?.id.toLowerCase();
+      if (historyFilter === 'pending') return tx.status === 'pending';
+      if (historyFilter === 'confirmed') return tx.status === 'confirmed';
+      return true;
+    });
+
+    return (
+      <div className="history-screen animate-fade-in" style={{ padding: '1rem', display: 'flex', flexDirection: 'column', height: '100%' }}>
+        <div className="section-header" style={{ marginBottom: '1.25rem' }}>
+          <h2 className="settings-title" style={{ fontSize: '1.5rem', fontWeight: 700, margin: 0, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <History size={24} style={{ color: 'var(--color-primary)' }} />
+            Verlauf &amp; Log 📜
+          </h2>
+          <p className="settings-subtitle" style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', margin: '0.25rem 0 0 0' }}>
+            Alle deine Einnahmen, Ausgaben und Begleichungen auf einen Blick.
+          </p>
+        </div>
+
+        {/* Search & Filters */}
+        <div className="input-wrapper" style={{ marginBottom: '1rem' }}>
+          <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+            <Search size={16} style={{ position: 'absolute', left: '12px', color: 'var(--text-secondary)' }} />
+            <input 
+              type="text" 
+              placeholder="Nach Beschreibung oder Freund suchen..." 
+              className="input-field" 
+              style={{ paddingLeft: '36px', width: '100%', borderRadius: '10px', fontSize: '0.85rem' }}
+              value={historySearch}
+              onChange={(e) => setHistorySearch(e.target.value)}
+            />
+          </div>
+        </div>
+
+        {/* Filter Pills */}
+        <div style={{ display: 'flex', gap: '0.35rem', overflowX: 'auto', paddingBottom: '0.75rem', marginBottom: '0.5rem', scrollbarWidth: 'none' }} className="no-scrollbar">
+          {[
+            { id: 'all', label: 'Alle' },
+            { id: 'credit', label: 'Gekriegt (+)' },
+            { id: 'debt', label: 'Schulde (-)' },
+            { id: 'pending', label: 'Ausstehend' },
+            { id: 'confirmed', label: 'Bestätigt' }
+          ].map(pill => (
+            <button
+              key={pill.id}
+              type="button"
+              onClick={() => setHistoryFilter(pill.id)}
+              style={{
+                padding: '0.4rem 0.8rem',
+                borderRadius: '20px',
+                fontSize: '0.75rem',
+                fontWeight: 600,
+                border: '1px solid',
+                borderColor: historyFilter === pill.id ? 'var(--color-primary)' : 'rgba(255, 255, 255, 0.08)',
+                background: historyFilter === pill.id ? 'var(--color-primary-bg)' : 'rgba(255, 255, 255, 0.02)',
+                color: historyFilter === pill.id ? 'var(--color-primary)' : 'var(--text-secondary)',
+                cursor: 'pointer',
+                whiteSpace: 'nowrap',
+                transition: 'all 0.2s ease'
+              }}
+            >
+              {pill.label}
+            </button>
+          ))}
+        </div>
+
+        {/* History List */}
+        <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.65rem' }} className="no-scrollbar">
+          {filteredTxs.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '2rem 1rem', color: 'var(--text-secondary)', background: 'rgba(255,255,255,0.01)', borderRadius: '12px', border: '1px dashed rgba(255,255,255,0.05)' }}>
+              <History size={32} style={{ color: 'var(--text-muted)', marginBottom: '0.5rem' }} />
+              <p style={{ margin: 0, fontSize: '0.85rem', fontWeight: 600 }}>Keine Einträge gefunden</p>
+              <p style={{ margin: '0.25rem 0 0 0', fontSize: '0.75rem', color: 'var(--text-muted)' }}>Versuche deine Filter anzupassen.</p>
+            </div>
+          ) : (
+            filteredTxs.map(tx => {
+              const isLender = tx.lenderId.toLowerCase() === currentUser?.id.toLowerCase();
+              const otherUserId = isLender ? tx.borrowerId : tx.lenderId;
+              const otherUser = Object.values(getUsers()).find(u => u.id.toLowerCase() === otherUserId.toLowerCase());
+              const name = otherUser?.name || otherUser?.username || 'Unbekannter Nutzer';
+              const avatar = otherUser?.avatar || 'https://api.dicebear.com/7.x/adventurer/svg?seed=placeholder';
+              
+              const isSettle = tx.description && (tx.description.includes('Beglichen') || tx.description.includes('beglichen'));
+
+              // Format date nicely
+              const d = new Date(tx.timestamp);
+              const dateStr = d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: '2-digit' });
+              const timeStr = d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+
+              return (
+                <div 
+                  key={tx.id} 
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    padding: '0.75rem',
+                    background: 'rgba(255, 255, 255, 0.02)',
+                    border: '1px solid rgba(255, 255, 255, 0.04)',
+                    borderRadius: '12px',
+                    gap: '0.75rem'
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', minWidth: 0 }}>
+                    <img 
+                      src={avatar} 
+                      alt={name} 
+                      style={{ width: '36px', height: '36px', borderRadius: '50%', objectFit: 'cover', background: 'rgba(255,255,255,0.05)' }} 
+                    />
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', flexWrap: 'wrap' }}>
+                        <span style={{ fontWeight: 600, fontSize: '0.85rem', color: 'var(--text-primary)' }} className="text-ellipsis">
+                          {name}
+                        </span>
+                        <span style={{ fontSize: '0.65rem', padding: '0.1rem 0.35rem', borderRadius: '6px', 
+                          background: tx.status === 'confirmed' ? 'var(--color-credit-bg)' : tx.status === 'pending' ? 'rgba(245, 158, 11, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+                          color: tx.status === 'confirmed' ? 'var(--color-credit)' : tx.status === 'pending' ? '#f59e0b' : '#ef4444',
+                          fontWeight: 600
+                        }}>
+                          {tx.status === 'confirmed' ? 'Bestätigt' : tx.status === 'pending' ? 'Ausstehend' : 'Abgelehnt'}
+                        </span>
+                      </div>
+                      <p style={{ margin: '0.15rem 0 0 0', fontSize: '0.75rem', color: 'var(--text-secondary)' }} className="text-ellipsis">
+                        {tx.description}
+                      </p>
+                      <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', display: 'block', marginTop: '0.15rem' }}>
+                        {dateStr} • {timeStr}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0 }}>
+                    {tx.imageUrl && (
+                      <button 
+                        type="button" 
+                        onClick={() => setLightboxImage(tx.imageUrl)}
+                        style={{ border: 'none', background: 'rgba(255,255,255,0.05)', padding: '0.35rem', borderRadius: '8px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)' }}
+                        title="Belegfoto ansehen"
+                      >
+                        <Landmark size={14} />
+                      </button>
+                    )}
+                    <span 
+                      style={{ 
+                        fontWeight: 700, 
+                        fontSize: '0.9rem', 
+                        color: isSettle ? 'var(--text-secondary)' : isLender ? 'var(--color-credit)' : 'var(--color-debt)',
+                        whiteSpace: 'nowrap'
+                      }}
+                    >
+                      {isSettle ? '' : isLender ? '+' : '-'}{formatCurrency(tx.amount)}
+                    </span>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+      </div>
+    );
+  };
+
   const renderDashboard = () => {
     const friends = getFriendsForUser(currentUser.id);
     
@@ -1097,11 +1268,12 @@ export default function PhoneView({ defaultUser, phoneName }) {
     const totalNetBalance = totalCredit - totalDebt;
     const netStatus = totalNetBalance > 0 ? 'credit' : totalNetBalance < 0 ? 'debt' : 'balanced';
     const pendingConfirmations = getPendingConfirmations(currentUser.id);
+    const incomingRequests = getFriendRequests().filter(req => req.to === currentUser.username && req.status === 'pending');
 
     // Filter friends list by search keyword
     const filteredFriends = friends.filter(f => 
-      f.name.toLowerCase().includes(friendSearch.toLowerCase()) || 
-      f.username.toLowerCase().includes(friendSearch.toLowerCase())
+      (f.name && f.name.toLowerCase().includes(friendSearch.toLowerCase())) || 
+      (f.username && f.username.toLowerCase().includes(friendSearch.toLowerCase()))
     );
 
     return (
@@ -1192,6 +1364,70 @@ export default function PhoneView({ defaultUser, phoneName }) {
           </div>
         )}
 
+        {/* Incoming Friend Requests Panel */}
+        {incomingRequests.length > 0 && (
+          <div className="inbox-container friend-requests-box animate-fade-in" style={{ 
+            background: 'linear-gradient(135deg, rgba(99, 102, 241, 0.08) 0%, rgba(255, 255, 255, 0.02) 100%)',
+            borderColor: 'rgba(99, 102, 241, 0.25)',
+            boxShadow: '0 8px 32px 0 rgba(99, 102, 241, 0.05), inset 0 1px 1px rgba(255, 255, 255, 0.05)'
+          }}>
+            <div className="inbox-title-row" style={{ color: 'var(--color-primary)' }}>
+              <span>👥 OFFENE ANFRAGEN</span>
+              <span className="inbox-count-badge" style={{ background: 'var(--color-primary)', color: 'var(--text-primary)' }}>
+                {incomingRequests.length} {incomingRequests.length === 1 ? 'Anfrage' : 'Anfragen'}
+              </span>
+            </div>
+            
+            <div className="inbox-list">
+              {incomingRequests.map(req => {
+                const users = getUsers();
+                const senderProfile = Object.values(users).find(u => u.username === req.from);
+                const senderName = senderProfile ? (senderProfile.name || `@${senderProfile.username}`) : `@${req.from}`;
+                const senderAvatar = senderProfile?.avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${req.from}`;
+                const senderEmail = senderProfile?.email || '';
+
+                return (
+                  <div key={req.id} className="inbox-item" style={{ borderHoverColor: 'rgba(99, 102, 241, 0.2)' }}>
+                    <div className="inbox-item-header">
+                      <img 
+                        src={senderAvatar} 
+                        alt={senderName} 
+                        className="inbox-item-avatar"
+                      />
+                      <div className="inbox-item-meta">
+                        <span className="inbox-item-name">
+                          {senderName}
+                        </span>
+                        <span className="inbox-item-desc">
+                          möchte sich mit dir befreunden {senderEmail && `(${senderEmail})`}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="inbox-item-actions">
+                      <button 
+                        onClick={() => handleRejectFriendRequest(req.id)}
+                        className="inbox-btn reject"
+                      >
+                        <X size={12} />
+                        Ablehnen
+                      </button>
+                      <button 
+                        onClick={() => handleConfirmFriendRequest(req.id)}
+                        className="inbox-btn confirm"
+                        style={{ background: 'var(--color-credit-bg)', color: 'var(--color-credit)', border: '1px solid rgba(16,185,129,0.2)' }}
+                      >
+                        <Check size={12} />
+                        Bestätigen
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {/* Cash Standing Comparison Diagram */}
         {friends.length > 0 && (
           <div className="stats-drawer-container animate-fade-in">
@@ -1246,10 +1482,10 @@ export default function PhoneView({ defaultUser, phoneName }) {
         )}
 
         {/* Add Friend Row */}
-        <form onSubmit={handleAddFriend} className="add-friend-container">
+        <form onSubmit={(e) => handleAddFriend(e)} className="add-friend-container" style={{ marginBottom: newFriendUsername.trim() ? '0.25rem' : '1rem' }}>
           <input 
             type="text" 
-            placeholder="Freund hinzufügen (Username)..." 
+            placeholder="Freund hinzufügen (Username oder E-Mail)..." 
             className="input-field flex-input"
             value={newFriendUsername}
             onChange={(e) => setNewFriendUsername(e.target.value)}
@@ -1258,6 +1494,86 @@ export default function PhoneView({ defaultUser, phoneName }) {
             <UserPlus size={20} />
           </button>
         </form>
+
+        {/* Dynamic Search Results Dropdown */}
+        {newFriendUsername.trim() && (() => {
+          const searchVal = newFriendUsername.toLowerCase().trim();
+          const allUsers = Object.values(getUsers());
+          const matchLimit = 5;
+          const matches = allUsers.filter(usr => {
+            if (!usr || !usr.id || usr.id === currentUser.id) return false;
+            const usernameMatch = usr.username && usr.username.toLowerCase().includes(searchVal);
+            const emailMatch = usr.email && usr.email.toLowerCase().includes(searchVal);
+            return usernameMatch || emailMatch;
+          }).slice(0, matchLimit);
+
+          if (matches.length === 0) {
+            return (
+              <div className="search-results-list" style={{ marginBottom: '1rem' }}>
+                <div style={{ padding: '0.5rem', fontSize: '0.75rem', color: 'var(--text-secondary)', textAlign: 'center' }}>
+                  Kein Benutzer mit "{newFriendUsername}" gefunden.
+                </div>
+              </div>
+            );
+          }
+
+          return (
+            <div className="search-results-list" style={{ marginBottom: '1rem' }}>
+              {matches.map(usr => {
+                const isFriend = usr.username && currentUser.friends && currentUser.friends.includes(usr.username);
+                
+                // Determine request status
+                const allReqs = getFriendRequests();
+                const outgoingReq = usr.username && allReqs.find(r => r.from === currentUser.username && r.to === usr.username && r.status === 'pending');
+                const incomingReq = usr.username && allReqs.find(r => r.from === usr.username && r.to === currentUser.username && r.status === 'pending');
+
+                return (
+                  <div key={usr.id} className="search-result-item">
+                    <div className="search-result-info">
+                      <img src={usr.avatar} alt={usr.name || usr.username} className="search-result-avatar" />
+                      <div className="search-result-text">
+                        <span className="search-result-name">{usr.name || usr.username || 'Unbekannter Nutzer'}</span>
+                        <span className="search-result-meta">
+                          {usr.username ? `@${usr.username}` : ''}
+                          {usr.email ? `${usr.username ? ' • ' : ''}${usr.email}` : ''}
+                        </span>
+                      </div>
+                    </div>
+                    <div>
+                      {isFriend ? (
+                        <div className="search-result-badge">
+                          <Check size={12} /> Befreundet
+                        </div>
+                      ) : outgoingReq ? (
+                        <div className="search-result-btn pending">
+                          Ausstehend
+                        </div>
+                      ) : incomingReq ? (
+                        <button 
+                          type="button"
+                          onClick={() => handleConfirmFriendRequest(incomingReq.id)}
+                          className="search-result-btn"
+                          style={{ background: 'var(--color-credit)' }}
+                        >
+                          Annehmen
+                        </button>
+                      ) : (
+                        <button 
+                          type="button" 
+                          onClick={() => handleAddFriend(null, usr.username || usr.email)}
+                          className="search-result-btn"
+                        >
+                          <UserPlus size={12} /> Hinzufügen
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })()}
+
         {friendError && <div className="error-banner" style={{marginBottom: '1rem'}}>{friendError}</div>}
         {friendSuccess && (
           <div className="error-banner" style={{
@@ -1266,7 +1582,7 @@ export default function PhoneView({ defaultUser, phoneName }) {
             color: 'var(--color-credit)',
             marginBottom: '1rem'
           }}>
-            Freund erfolgreich hinzugefügt!
+            Freundschaftsanfrage gesendet!
           </div>
         )}
 
@@ -1487,7 +1803,17 @@ export default function PhoneView({ defaultUser, phoneName }) {
                     )}
                   </div>
                   <span className="bubble-time">
-                    {new Date(tx.timestamp).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}
+                    {(() => {
+                      const d = new Date(tx.timestamp);
+                      const today = new Date();
+                      const isToday = d.getDate() === today.getDate() &&
+                                      d.getMonth() === today.getMonth() &&
+                                      d.getFullYear() === today.getFullYear();
+                      const timeStr = d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+                      if (isToday) return timeStr;
+                      const dateStr = d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: '2-digit' });
+                      return `${dateStr}, ${timeStr}`;
+                    })()}
                   </span>
                 </div>
               );
@@ -1540,11 +1866,14 @@ export default function PhoneView({ defaultUser, phoneName }) {
     const totalNet = totalCredit - totalDebt;
     const netStatus = totalNet > 0 ? 'credit' : totalNet < 0 ? 'debt' : 'balanced';
     const pendingCount = getPendingConfirmations(currentUser.id).length;
+    const pendingFriendRequests = getFriendRequests().filter(req => 
+      req.to === currentUser.username && req.status === 'pending'
+    ).length;
 
     return (
       <aside className="web-sidebar">
         {/* App Brand */}
-        <div className="sidebar-brand">
+        <div className="sidebar-brand" onClick={() => setCurrentScreen('dashboard')} style={{ cursor: 'pointer' }}>
           <div className="sidebar-brand-logo">💸</div>
           <span className="sidebar-brand-name">DeptManager</span>
         </div>
@@ -1595,6 +1924,63 @@ export default function PhoneView({ defaultUser, phoneName }) {
           </div>
         )}
 
+        {/* Pending Friend Requests Badge */}
+        {pendingFriendRequests > 0 && (
+          <div className="sidebar-inbox-hint friend-requests-hint" onClick={() => setCurrentScreen('dashboard')} style={{ marginTop: '0.5rem', background: 'linear-gradient(135deg, rgba(99, 102, 241, 0.1) 0%, rgba(255, 255, 255, 0.02) 100%)', borderColor: 'rgba(99, 102, 241, 0.25)', color: 'var(--color-primary)' }}>
+            <span>👥 {pendingFriendRequests} offene {pendingFriendRequests === 1 ? 'Anfrage' : 'Anfragen'}</span>
+          </div>
+        )}
+
+        {/* Navigation Section */}
+        <div className="sidebar-section-label">Navigation</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', marginBottom: '0.85rem' }}>
+          <button 
+            type="button" 
+            onClick={() => setCurrentScreen('dashboard')}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.65rem',
+              width: '100%',
+              padding: '0.55rem 0.75rem',
+              borderRadius: '10px',
+              border: 'none',
+              background: currentScreen === 'dashboard' ? 'rgba(255, 255, 255, 0.05)' : 'transparent',
+              color: currentScreen === 'dashboard' ? 'var(--text-primary)' : 'var(--text-secondary)',
+              fontSize: '0.8rem',
+              fontWeight: 600,
+              cursor: 'pointer',
+              textAlign: 'left',
+              transition: 'all 0.2s ease'
+            }}
+          >
+            <Home size={16} /> Home / Übersicht
+          </button>
+          
+          <button 
+            type="button" 
+            onClick={() => setCurrentScreen('history')}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.65rem',
+              width: '100%',
+              padding: '0.55rem 0.75rem',
+              borderRadius: '10px',
+              border: 'none',
+              background: currentScreen === 'history' ? 'rgba(255, 255, 255, 0.05)' : 'transparent',
+              color: currentScreen === 'history' ? 'var(--text-primary)' : 'var(--text-secondary)',
+              fontSize: '0.8rem',
+              fontWeight: 600,
+              cursor: 'pointer',
+              textAlign: 'left',
+              transition: 'all 0.2s ease'
+            }}
+          >
+            <History size={16} /> Transaktionsverlauf
+          </button>
+        </div>
+
         {/* Friends List */}
         <div className="sidebar-section-label">Freunde & Salden</div>
         <div className="sidebar-friends-list">
@@ -1622,10 +2008,10 @@ export default function PhoneView({ defaultUser, phoneName }) {
         </div>
 
         {/* Add Friend */}
-        <form onSubmit={handleAddFriend} className="sidebar-add-friend">
+        <form onSubmit={(e) => handleAddFriend(e)} className="sidebar-add-friend" style={{ marginBottom: newFriendUsername.trim() ? '0.25rem' : '0' }}>
           <input
             type="text"
-            placeholder="Username hinzufügen..."
+            placeholder="Username oder E-Mail..."
             className="input-field"
             style={{ fontSize: '0.8rem' }}
             value={newFriendUsername}
@@ -1635,8 +2021,85 @@ export default function PhoneView({ defaultUser, phoneName }) {
             <UserPlus size={16} />
           </button>
         </form>
+
+        {/* Compact Dynamic Search Results for Sidebar */}
+        {newFriendUsername.trim() && (() => {
+          const searchVal = newFriendUsername.toLowerCase().trim();
+          const allUsers = Object.values(getUsers());
+          const matchLimit = 4;
+          const matches = allUsers.filter(usr => {
+            if (!usr || !usr.id || usr.id === currentUser.id) return false;
+            const usernameMatch = usr.username && usr.username.toLowerCase().includes(searchVal);
+            const emailMatch = usr.email && usr.email.toLowerCase().includes(searchVal);
+            return usernameMatch || emailMatch;
+          }).slice(0, matchLimit);
+
+          if (matches.length === 0) {
+            return (
+              <div className="search-results-list" style={{ margin: '0.5rem 0', fontSize: '0.7rem' }}>
+                <div style={{ padding: '0.4rem', color: 'var(--text-secondary)', textAlign: 'center' }}>
+                  Keine Treffer
+                </div>
+              </div>
+            );
+          }
+
+          return (
+            <div className="search-results-list" style={{ margin: '0.5rem 0' }}>
+              {matches.map(usr => {
+                const isFriend = usr.username && currentUser.friends && currentUser.friends.includes(usr.username);
+                
+                const allReqs = getFriendRequests();
+                const outgoingReq = usr.username && allReqs.find(r => r.from === currentUser.username && r.to === usr.username && r.status === 'pending');
+                const incomingReq = usr.username && allReqs.find(r => r.from === usr.username && r.to === currentUser.username && r.status === 'pending');
+
+                return (
+                  <div key={usr.id} className="search-result-item" style={{ padding: '0.4rem' }}>
+                    <div className="search-result-info" style={{ gap: '0.4rem', minWidth: 0 }}>
+                      <img src={usr.avatar} alt={usr.name || usr.username} className="search-result-avatar" style={{ width: '24px', height: '24px', flexShrink: 0 }} />
+                      <div className="search-result-text" style={{ minWidth: 0 }}>
+                        <span className="search-result-name" style={{ fontSize: '0.7rem' }}>{usr.name || usr.username || 'Unbekannt'}</span>
+                        <span className="search-result-meta" style={{ fontSize: '0.55rem' }}>{usr.username ? `@${usr.username}` : (usr.email || '')}</span>
+                      </div>
+                    </div>
+                    <div>
+                      {isFriend ? (
+                        <div className="search-result-badge" style={{ padding: '0.15rem 0.35rem', fontSize: '0.6rem', borderRadius: '6px' }}>
+                          <Check size={9} />
+                        </div>
+                      ) : outgoingReq ? (
+                        <div className="search-result-btn pending" style={{ padding: '0.15rem 0.35rem', fontSize: '0.6rem', borderRadius: '6px' }}>
+                          Ausst.
+                        </div>
+                      ) : incomingReq ? (
+                        <button 
+                          type="button"
+                          onClick={() => handleConfirmFriendRequest(incomingReq.id)}
+                          className="search-result-btn"
+                          style={{ background: 'var(--color-credit)', padding: '0.15rem 0.35rem', fontSize: '0.6rem', borderRadius: '6px' }}
+                        >
+                          Ja
+                        </button>
+                      ) : (
+                        <button 
+                          type="button" 
+                          onClick={() => handleAddFriend(null, usr.username || usr.email)}
+                          className="search-result-btn"
+                          style={{ padding: '0.15rem 0.35rem', fontSize: '0.6rem', borderRadius: '6px' }}
+                        >
+                          +
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })()}
+
         {friendError && <div className="error-banner" style={{ margin: '0.5rem 0 0', fontSize: '0.75rem' }}>{friendError}</div>}
-        {friendSuccess && <div className="error-banner" style={{ margin: '0.5rem 0 0', fontSize: '0.75rem', background: 'var(--color-credit-bg)', color: 'var(--color-credit)', border: '1px solid rgba(16,185,129,0.2)' }}>Freund hinzugefügt!</div>}
+        {friendSuccess && <div className="error-banner" style={{ margin: '0.5rem 0 0', fontSize: '0.75rem', background: 'var(--color-credit-bg)', color: 'var(--color-credit)', border: '1px solid rgba(16,185,129,0.2)' }}>Anfrage gesendet!</div>}
 
         {/* Split Button */}
         {friends.length > 0 && (
@@ -1701,11 +2164,24 @@ export default function PhoneView({ defaultUser, phoneName }) {
           </header>
         )}
 
-        {/* Dashboard, Chat or Settings */}
+        {/* Top bar for history */}
+        {currentScreen === 'history' && (
+          <header className="web-topbar">
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+              <button className="back-btn web-back-btn" onClick={() => setCurrentScreen('dashboard')}>
+                <ArrowLeft size={20} />
+              </button>
+              <span className="user-meta-name">Transaktionsverlauf</span>
+            </div>
+          </header>
+        )}
+
+        {/* Dashboard, Chat, Settings or History */}
         <div className="web-content-area">
           {currentScreen === 'dashboard' && renderDashboard()}
           {currentScreen === 'chat' && renderChatScreen()}
           {currentScreen === 'settings' && renderSettingsScreen()}
+          {currentScreen === 'history' && renderHistoryScreen()}
         </div>
       </div>
     );
@@ -1734,10 +2210,16 @@ export default function PhoneView({ defaultUser, phoneName }) {
   return (
     <div className="app-root-screen">
       {currentUser ? (
-        <div className="web-layout">
-          {renderSidebar()}
-          {renderMainContent()}
-        </div>
+        !emailVerified && auth.currentUser?.email ? (
+          <div className="web-auth-wrapper">
+            {renderVerifyEmailScreen()}
+          </div>
+        ) : (
+          <div className="web-layout">
+            {renderSidebar()}
+            {renderMainContent()}
+          </div>
+        )
       ) : (
         <div className="web-auth-wrapper">
           {renderAuthScreen()}
@@ -1765,11 +2247,22 @@ export default function PhoneView({ defaultUser, phoneName }) {
                 <label className="input-label">Foto anhängen (optional)</label>
                 {attachedImage ? (
                   <div className="photo-attached-preview animate-fade-in">
-                    <img src={getPhotoByDescription(txDescription)} alt="Attachment" />
-                    <button type="button" className="photo-attached-remove" onClick={() => setAttachedImage(false)}><X size={12} /></button>
+                    <img src={attachedImage} alt="Attachment" />
+                    <button type="button" className="photo-attached-remove" onClick={() => setAttachedImage(null)}><X size={12} /></button>
                   </div>
                 ) : (
-                  <button type="button" className="btn-attach-photo" onClick={() => setCameraActive(true)}><span>📷 Foto aufnehmen</span></button>
+                  <>
+                    <input 
+                      type="file" 
+                      accept="image/*" 
+                      style={{ display: 'none' }} 
+                      id="tx-photo-upload" 
+                      onChange={handlePhotoUpload} 
+                    />
+                    <button type="button" className="btn-attach-photo" onClick={() => document.getElementById('tx-photo-upload').click()}>
+                      <span>📷 Foto auswählen / aufnehmen</span>
+                    </button>
+                  </>
                 )}
               </div>
               <div className="input-wrapper">
@@ -1796,6 +2289,28 @@ export default function PhoneView({ defaultUser, phoneName }) {
               <div className="amount-input-container">
                 <span className="amount-currency">€</span>
                 <input type="text" placeholder="0,00" className="amount-input" value={splitAmount} onChange={e => setSplitAmount(e.target.value)} autoFocus />
+              </div>
+              <div className="input-wrapper">
+                <label className="input-label">Foto anhängen (optional)</label>
+                {attachedImage ? (
+                  <div className="photo-attached-preview animate-fade-in">
+                    <img src={attachedImage} alt="Attachment" />
+                    <button type="button" className="photo-attached-remove" onClick={() => setAttachedImage(null)}><X size={12} /></button>
+                  </div>
+                ) : (
+                  <>
+                    <input 
+                      type="file" 
+                      accept="image/*" 
+                      style={{ display: 'none' }} 
+                      id="split-photo-upload" 
+                      onChange={handlePhotoUpload} 
+                    />
+                    <button type="button" className="btn-attach-photo" onClick={() => document.getElementById('split-photo-upload').click()}>
+                      <span>📷 Foto auswählen / aufnehmen</span>
+                    </button>
+                  </>
+                )}
               </div>
               <div className="input-wrapper">
                 <label className="input-label">Verwendungszweck</label>
@@ -1862,35 +2377,7 @@ export default function PhoneView({ defaultUser, phoneName }) {
           <p style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', marginTop: '0.25rem' }}>Tippen zum Schließen</p>
         </div>
       )}
-      {cameraActive && (
-        <div className="camera-overlay">
-          <div className={`camera-flash ${cameraFlash ? 'flash-active' : ''}`}></div>
-          <div className="camera-header">
-            <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>📷 Foto aufnehmen</span>
-            <button type="button" className="icon-btn" onClick={() => setCameraActive(false)}><X size={16} /></button>
-          </div>
-          <div className="camera-viewfinder">
-            <div className="camera-grid-line h1"></div>
-            <div className="camera-grid-line h2"></div>
-            <div className="camera-grid-line v1"></div>
-            <div className="camera-grid-line v2"></div>
-            <div className="camera-scan-glow"></div>
-            {cameraProcessing ? (
-              <div style={{ color: 'white', fontWeight: 700, fontSize: '0.95rem', zIndex: 10, textAlign: 'center' }}>
-                <Clock size={32} className="animate-spin" style={{ margin: '0 auto 0.5rem auto', color: 'var(--color-primary)' }} />
-                Foto wird verarbeitet...
-              </div>
-            ) : (
-              <div style={{ color: 'rgba(255,255,255,0.6)', fontWeight: 600, fontSize: '0.75rem', zIndex: 10, textAlign: 'center', background: 'rgba(0,0,0,0.5)', padding: '0.4rem 0.8rem', borderRadius: '20px' }}>
-                Gegenstand oder Beleg fokussieren
-              </div>
-            )}
-          </div>
-          <div className="camera-controls">
-            <button type="button" className="camera-shutter-btn" disabled={cameraProcessing} onClick={handleSnapPhoto}></button>
-          </div>
-        </div>
-      )}
+
 
       {/* Mobile Bottom Navigation - only visible on small screens */}
       {currentUser && (
@@ -1911,6 +2398,13 @@ export default function PhoneView({ defaultUser, phoneName }) {
               <span>{selectedFriend.name.split(' ')[0]}</span>
             </button>
           )}
+          <button
+            className={`mobile-nav-item ${currentScreen === 'history' ? 'active' : ''}`}
+            onClick={() => setCurrentScreen('history')}
+          >
+            <History size={20} />
+            <span>Verlauf</span>
+          </button>
           <button
             className={`mobile-nav-item ${currentScreen === 'settings' ? 'active' : ''}`}
             onClick={() => setCurrentScreen('settings')}
