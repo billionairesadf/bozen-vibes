@@ -358,6 +358,14 @@ export default function PhoneView({ defaultUser, phoneName }) {
     }
   };
 
+  const triggerToast = (msg, duration = 3000) => {
+    setToastMessage(msg);
+    setShowToast(true);
+    if (toastTimeout) clearTimeout(toastTimeout);
+    const timeout = setTimeout(() => setShowToast(false), duration);
+    setToastTimeout(timeout);
+  };
+
   const handleLogoutFromVerify = async () => {
     try {
       await logoutUser();
@@ -376,16 +384,13 @@ export default function PhoneView({ defaultUser, phoneName }) {
         const verified = auth.currentUser.emailVerified;
         setEmailVerified(verified);
         if (verified) {
-          setToastMessage("E-Mail erfolgreich verifiziert! 🎉");
-          setShowToast(true);
+          triggerToast("E-Mail erfolgreich verifiziert! 🎉");
         } else {
-          setToastMessage("E-Mail ist noch nicht verifiziert. Bitte überprüfe dein Postfach.");
-          setShowToast(true);
+          triggerToast("E-Mail ist noch nicht verifiziert. Bitte überprüfe dein Postfach.");
         }
       } catch (err) {
         console.error("Reload user failed", err);
-        setToastMessage("Fehler beim Aktualisieren: " + err.message);
-        setShowToast(true);
+        triggerToast("Fehler beim Aktualisieren: " + err.message);
       }
     }
   };
@@ -394,13 +399,11 @@ export default function PhoneView({ defaultUser, phoneName }) {
     if (auth.currentUser) {
       try {
         await sendEmailVerification(auth.currentUser);
-        setToastMessage("Verifizierungs-E-Mail wurde erneut gesendet. ✉️");
-        setShowToast(true);
+        triggerToast("Verifizierungs-E-Mail wurde erneut gesendet. ✉️");
         setResendCooldown(60);
       } catch (err) {
         console.error("Resend verification failed", err);
-        setToastMessage("Fehler beim Senden: " + err.message);
-        setShowToast(true);
+        triggerToast("Fehler beim Senden: " + err.message);
       }
     }
   };
