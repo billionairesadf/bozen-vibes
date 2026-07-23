@@ -2580,6 +2580,7 @@ body {
   overflow-y: auto;
   width: 100%;
   box-sizing: border-box;
+  flex-shrink: 0;
 }
 
 .search-result-item {
@@ -2593,6 +2594,7 @@ body {
   gap: 0.5rem;
   width: 100%;
   box-sizing: border-box;
+  flex-shrink: 0;
 }
 
 .search-result-item:hover {
