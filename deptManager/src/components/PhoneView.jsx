@@ -137,6 +137,7 @@ export default function PhoneView({ defaultUser, phoneName }) {
   const [historySearch, setHistorySearch] = useState('');
   
   // Auth Form
+  const [unauthScreen, setUnauthScreen] = useState('landing'); // 'landing' | 'auth'
   const [authMethod, setAuthMethod] = useState('email'); // 'phone' | 'email'
   const [isRegisterMode, setIsRegisterMode] = useState(false);
   const [authUsername, setAuthUsername] = useState('');
@@ -801,11 +802,150 @@ export default function PhoneView({ defaultUser, phoneName }) {
     }
   };
 
+  const renderLandingPage = () => {
+    return (
+      <div className="landing-container">
+        <header className="landing-header">
+          <div className="landing-brand">
+            <span className="landing-brand-logo">💸</span>
+            <span className="landing-brand-name">DeptManager</span>
+          </div>
+          <div className="landing-nav">
+            <button 
+              className="landing-nav-link" 
+              onClick={() => {
+                setIsRegisterMode(false);
+                setUnauthScreen('auth');
+              }}
+            >
+              Anmelden
+            </button>
+            <button 
+              className="landing-nav-btn" 
+              onClick={() => {
+                setIsRegisterMode(true);
+                setUnauthScreen('auth');
+              }}
+            >
+              Registrieren
+            </button>
+          </div>
+        </header>
+
+        <main className="landing-main">
+          {/* Hero Section */}
+          <section className="landing-hero-section">
+            <h1 className="landing-hero-title">
+              Schulden teilen. <br />
+              <span className="gradient-text">Intelligent verrechnen.</span>
+            </h1>
+            <p className="landing-hero-subtitle">
+              Die einfachste Art, Ausgaben unter Freunden zu verwalten. DeptManager berechnet automatisch den effizientesten Weg, Schulden über Ecken auszugeleichen.
+            </p>
+            <div className="landing-hero-actions">
+              <button 
+                className="landing-cta-btn" 
+                onClick={() => {
+                  setIsRegisterMode(true);
+                  setUnauthScreen('auth');
+                }}
+              >
+                Jetzt kostenlos starten
+              </button>
+            </div>
+          </section>
+
+          {/* Netting Visualisierung */}
+          <section className="landing-viz-section">
+            <div className="netting-card">
+              <div className="netting-card-header">
+                <h3>🔄 Smart Netting (Verrechnung)</h3>
+              </div>
+              <div className="netting-viz-container">
+                <div className="netting-node">
+                  <div className="node-avatar">👩</div>
+                  <span>Anna</span>
+                </div>
+                <div className="netting-arrow">
+                  <span className="arrow-value line-through">schuldet 15€</span>
+                  <span className="arrow-shaft">➔</span>
+                </div>
+                <div className="netting-node">
+                  <div className="node-avatar">👨</div>
+                  <span>Ben</span>
+                </div>
+                <div className="netting-arrow">
+                  <span className="arrow-value line-through">schuldet 15€</span>
+                  <span className="arrow-shaft">➔</span>
+                </div>
+                <div className="netting-node">
+                  <div className="node-avatar">👧</div>
+                  <span>Clara</span>
+                </div>
+              </div>
+              <div className="netting-result-divider"></div>
+              <div className="netting-result-container">
+                <span className="netting-badge-success">Intelligente Lösung</span>
+                <p><strong>Anna</strong> zahlt direkt <strong>15€</strong> an <strong>Clara</strong>. Ben muss nichts tun!</p>
+              </div>
+            </div>
+          </section>
+
+          {/* Features Grid */}
+          <section className="landing-features-section">
+            <h2 className="section-header-title">Alles, was du brauchst</h2>
+            <div className="features-grid">
+              <div className="feature-card-item">
+                <div className="feature-card-icon-container">
+                  <ArrowRightLeft size={24} style={{ color: 'var(--color-primary)' }} />
+                </div>
+                <h3>Smart Netting</h3>
+                <p>Algorithmen berechnen den optimalen Ausgleichspfad, um Überweisungen zu minimieren.</p>
+              </div>
+              <div className="feature-card-item">
+                <div className="feature-card-icon-container">
+                  <MessageCircle size={24} style={{ color: 'var(--color-primary)' }} />
+                </div>
+                <h3>Chat-Verlauf</h3>
+                <p>Jede Transaktion wird wie eine Chat-Nachricht dargestellt. Perfekt für Transparenz.</p>
+              </div>
+              <div className="feature-card-item">
+                <div className="feature-card-icon-container">
+                  <Clock size={24} style={{ color: 'var(--color-primary)' }} />
+                </div>
+                <h3>Echtzeit-Synchronisierung</h3>
+                <p>Firebase sorgt dafür, dass alle Freunde Änderungen sofort auf ihrem Smartphone sehen.</p>
+              </div>
+              <div className="feature-card-item">
+                <div className="feature-card-icon-container">
+                  <Settings size={24} style={{ color: 'var(--color-primary)' }} />
+                </div>
+                <h3>Profil-Anpassung</h3>
+                <p>Lade dein Profilbild hoch und verwalte deinen Anzeigenamen ganz flexibel.</p>
+              </div>
+            </div>
+          </section>
+        </main>
+
+        <footer className="landing-footer">
+          <p>© {new Date().getFullYear()} DeptManager. Alle Rechte vorbehalten. 💸</p>
+        </footer>
+      </div>
+    );
+  };
+
   // --- Render Sub-Views ---
 
   const renderAuthScreen = () => {
     return (
       <div className="auth-container">
+        <button 
+          type="button"
+          onClick={() => setUnauthScreen('landing')} 
+          className="auth-back-to-landing-btn"
+        >
+          <ArrowLeft size={16} /> Zurück zur Startseite
+        </button>
         <div className="auth-header">
           <div className="auth-logo">💸</div>
           <h2 className="auth-title">DeptManager</h2>
@@ -2224,10 +2364,14 @@ export default function PhoneView({ defaultUser, phoneName }) {
           </div>
         )
       ) : (
-        <div className="web-auth-wrapper">
-          {renderAuthScreen()}
-          <div id="recaptcha-container"></div>
-        </div>
+        unauthScreen === 'landing' ? (
+          renderLandingPage()
+        ) : (
+          <div className="web-auth-wrapper">
+            {renderAuthScreen()}
+            <div id="recaptcha-container"></div>
+          </div>
+        )
       )}
 
       {/* Overlays: sheets, toast, lightbox, camera — always rendered in root */}
