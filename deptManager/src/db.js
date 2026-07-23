@@ -1,4 +1,5 @@
 import { initializeApp } from 'firebase/app';
+import { getMessaging, getToken } from 'firebase/messaging';
 import { 
   getAuth, 
   signInWithEmailAndPassword, 
@@ -7,7 +8,9 @@ import {
   onAuthStateChanged,
   RecaptchaVerifier,
   signInWithPhoneNumber,
-  sendEmailVerification
+  sendEmailVerification,
+  GoogleAuthProvider,
+  signInWithPopup
 } from 'firebase/auth';
 import { 
   getFirestore, 
@@ -37,6 +40,7 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 export const db = getFirestore(app);
+export const messaging = getMessaging(app);
 
 // In-Memory cache for synchronous component state read calls
 let cacheUsers = {};
@@ -174,7 +178,7 @@ export const checkUsernameUnique = async (username) => {
   return querySnapshot.empty;
 };
 
-export const createUserProfile = async (uid, username, name, email = null, phoneNumber = null) => {
+export const createUserProfile = async (uid, username, name, email = null, phoneNumber = null, avatar = null) => {
   const normalizedUsername = username.toLowerCase().trim();
   
   // Verify username is unique
@@ -194,7 +198,7 @@ export const createUserProfile = async (uid, username, name, email = null, phone
     name: name.trim() || normalizedUsername,
     email: email ? email.toLowerCase().trim() : null,
     phoneNumber: phoneNumber || null,
-    avatar: `https://api.dicebear.com/7.x/adventurer/svg?seed=${normalizedUsername}`,
+    avatar: avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${normalizedUsername}`,
     friends: defaultFriends
   };
 
@@ -287,6 +291,16 @@ export const loginUserInFirebase = async (loginIdentifier, password) => {
     throw new Error('Benutzerprofil nicht in Firestore gefunden.');
   } catch (err) {
     throw new Error('Anmeldung fehlgeschlagen: ' + err.message);
+  }
+};
+
+export const loginWithGoogle = async () => {
+  const provider = new GoogleAuthProvider();
+  try {
+    const result = await signInWithPopup(auth, provider);
+    return result.user;
+  } catch (err) {
+    throw new Error(err.message);
   }
 };
 
@@ -450,4 +464,58 @@ export const subscribeToDB = (callback) => {
 
 export const resetDatabase = () => {
   console.warn('resetDatabase called. Resetting database is disabled in Firebase production mode.');
+};
+
+export const requestNotificationPermission = async (userId) => {
+  if (typeof window === 'undefined' || !('Notification' in window)) {
+    console.warn('Benachrichtigungen werden von diesem Browser nicht unterstützt.');
+    return null;
+  }
+
+  try {
+    const permission = await Notification.requestPermission();
+    if (permission !== 'granted') {
+      console.log('Benachrichtigungs-Berechtigung wurde verweigert.');
+      return null;
+    }
+
+    const VAPID_KEY = 'BB9AEYoZdStYYSTkclWULcSZ3MC3Ga67xQ1YzoYTLbwiBNlENZatUjDs_z_xZf84rsSVRz6z75s8O8Uh1p_CgUY';
+    
+    let token = null;
+    try {
+      token = await getToken(messaging, { vapidKey: VAPID_KEY });
+    } catch (tokenErr) {
+      console.warn('Konnte FCM Token nicht abrufen (VAPID Key ungültig oder fehlt):', tokenErr);
+    }
+
+    if (token) {
+      const userRef = doc(db, 'users', userId);
+      const userDoc = await getDoc(userRef);
+      if (userDoc.exists()) {
+        const data = userDoc.data();
+        const currentTokens = data.fcmTokens || [];
+        if (!currentTokens.includes(token)) {
+          const updatedTokens = [...currentTokens, token];
+          await updateDoc(userRef, { fcmTokens: updatedTokens });
+        }
+      }
+      return token;
+    }
+  } catch (err) {
+    console.error('Fehler beim Einrichten der Push-Benachrichtigungen:', err);
+  }
+  return null;
+};
+
+export const createNudge = async (fromUserId, toUserId) => {
+  try {
+    await addDoc(collection(db, 'nudges'), {
+      fromUserId,
+      toUserId,
+      timestamp: Date.now()
+    });
+  } catch (err) {
+    console.error('Fehler beim Eintragen des Nudges in Firestore:', err);
+    throw err;
+  }
 };

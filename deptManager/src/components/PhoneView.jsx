@@ -6,13 +6,15 @@ import {
   Home, MessageCircle, UserCircle, Settings, History
 } from 'lucide-react';
 import { 
-  auth, loginOrCreateUser, sendFriendRequest, acceptFriendRequest, rejectFriendRequest, getFriendRequests, getFriendsForUser, 
+  auth, db, messaging, requestNotificationPermission, createNudge, loginOrCreateUser, sendFriendRequest, acceptFriendRequest, rejectFriendRequest, getFriendRequests, getFriendsForUser, 
   getBalanceBetween, getTransactionHistory, addTransaction, 
   subscribeToDB, getUsers, confirmTransaction, rejectTransaction, logoutUser,
-  registerUserInFirebase, loginUserInFirebase, checkUsernameUnique, createUserProfile,
+  registerUserInFirebase, loginUserInFirebase, loginWithGoogle, checkUsernameUnique, createUserProfile,
   getPendingConfirmations, updateUserProfile, getAllTransactionsForUser
 } from '../db';
 import { RecaptchaVerifier, signInWithPhoneNumber, onAuthStateChanged, sendEmailVerification } from 'firebase/auth';
+import { doc, getDoc } from 'firebase/firestore';
+import { onMessage } from 'firebase/messaging';
 // Google AdSense Global Configuration
 const GOOGLE_ADSENSE_PUBLISHER_ID = 'ca-pub-6041979504682770'; // Deine Google AdSense Publisher-ID
 const GOOGLE_ADSENSE_SLOT_ID = '1234567890'; // Ersetze dies mit deiner echten Slot-ID aus deinem AdSense-Dashboard
@@ -145,6 +147,7 @@ export default function PhoneView({ defaultUser, phoneName }) {
   const [authName, setAuthName] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authError, setAuthError] = useState('');
+  const [googleAuthData, setGoogleAuthData] = useState(null); // { uid, email, name, avatar }
 
   // Phone Auth specific states
   const [authPhone, setAuthPhone] = useState('');
@@ -162,6 +165,7 @@ export default function PhoneView({ defaultUser, phoneName }) {
   // Bottom Sheet
   const [sheetOpen, setSheetOpen] = useState(false);
   const [sheetType, setSheetType] = useState('lend'); // 'lend' | 'settle'
+  const [lendDirection, setLendDirection] = useState('give'); // 'give' (verliehen) | 'take' (geliehen bekommen)
   const [txAmount, setTxAmount] = useState('');
   const [txDescription, setTxDescription] = useState('');
   const [txError, setTxError] = useState('');
@@ -183,8 +187,8 @@ export default function PhoneView({ defaultUser, phoneName }) {
   const [lightboxImage, setLightboxImage] = useState(null);
   // Settings Form States
   const [settingsName, setSettingsName] = useState('');
-  const [settingsEmail, setSettingsEmail] = useState('');
   const [settingsPhone, setSettingsPhone] = useState('');
+  const [settingsPayPalMe, setSettingsPayPalMe] = useState('');
   const [settingsAvatar, setSettingsAvatar] = useState('');
   const [settingsError, setSettingsError] = useState('');
   const [settingsSuccess, setSettingsSuccess] = useState(false);
@@ -209,8 +213,8 @@ export default function PhoneView({ defaultUser, phoneName }) {
   useEffect(() => {
     if (currentScreen === 'settings' && currentUser) {
       setSettingsName(currentUser.name || '');
-      setSettingsEmail(currentUser.email || '');
       setSettingsPhone(currentUser.phoneNumber || '');
+      setSettingsPayPalMe(currentUser.payPalMe || '');
       setSettingsAvatar(currentUser.avatar || '');
       setSettingsError('');
       setSettingsSuccess(false);
@@ -259,6 +263,26 @@ export default function PhoneView({ defaultUser, phoneName }) {
             setCurrentScreen('dashboard');
           }
           setAuthInitialized(true);
+        } else {
+          // If the users cache is loaded but this user has no profile, redirect to complete-profile
+          if (Object.keys(users).length > 0) {
+            if (unauthScreen !== 'complete-profile') {
+              let suggestedUsername = '';
+              if (firebaseUser.email) {
+                suggestedUsername = firebaseUser.email.split('@')[0].toLowerCase().replace(/[^a-z0-9._-]/g, '');
+              }
+              setGoogleAuthData({
+                uid: firebaseUser.uid,
+                email: firebaseUser.email,
+                name: firebaseUser.displayName || '',
+                avatar: firebaseUser.photoURL || `https://api.dicebear.com/7.x/adventurer/svg?seed=${firebaseUser.uid}`,
+                suggestedUsername: suggestedUsername
+              });
+              setAuthUsername(suggestedUsername);
+              setAuthName(firebaseUser.displayName || '');
+              setUnauthScreen('complete-profile');
+            }
+          }
         }
       } else if (currentUser) {
         // If we are logged in, make sure our user reference is fresh
@@ -269,7 +293,7 @@ export default function PhoneView({ defaultUser, phoneName }) {
       }
     });
     return unsubscribe;
-  }, [currentUser]);
+  }, [currentUser, unauthScreen]);
 
   // Listen to BroadcastChannel for real-time nudges
   useEffect(() => {
@@ -289,6 +313,29 @@ export default function PhoneView({ defaultUser, phoneName }) {
     };
 
     return () => nudgeChannel.close();
+  }, [currentUser, toastTimeout]);
+
+  // Handle FCM Web Push Notification permission and foreground messages
+  useEffect(() => {
+    if (currentUser) {
+      // 1. Request token & permission
+      requestNotificationPermission(currentUser.id);
+
+      // 2. Set up foreground push listener
+      const unsubscribeForeground = onMessage(messaging, (payload) => {
+        console.log('Foreground FCM push message received: ', payload);
+        const title = payload.notification?.title || payload.data?.title || 'Benachrichtigung';
+        const body = payload.notification?.body || payload.data?.body || '';
+        
+        setToastMessage(`🔔 ${title}: ${body}`);
+        setShowToast(true);
+        if (toastTimeout) clearTimeout(toastTimeout);
+        const timeout = setTimeout(() => setShowToast(false), 5000);
+        setToastTimeout(timeout);
+      });
+
+      return unsubscribeForeground;
+    }
   }, [currentUser, toastTimeout]);
 
   // --- Handlers ---
@@ -504,6 +551,100 @@ export default function PhoneView({ defaultUser, phoneName }) {
     }
   };
 
+  const handleGoogleLogin = async () => {
+    setAuthError('');
+    try {
+      const firebaseUser = await loginWithGoogle();
+      
+      // Fetch user profile from Firestore directly
+      const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
+      
+      if (userDoc.exists()) {
+        // User profile exists -> log in
+        const profile = { id: firebaseUser.uid, ...userDoc.data() };
+        setCurrentUser(profile);
+        setEmailVerified(firebaseUser.emailVerified || false);
+        setCurrentScreen('dashboard');
+      } else {
+        // New user! Set state and transition to profile completion screen
+        let suggestedUsername = '';
+        if (firebaseUser.email) {
+          suggestedUsername = firebaseUser.email.split('@')[0].toLowerCase().replace(/[^a-z0-9._-]/g, '');
+        }
+        setGoogleAuthData({
+          uid: firebaseUser.uid,
+          email: firebaseUser.email,
+          name: firebaseUser.displayName || '',
+          avatar: firebaseUser.photoURL || `https://api.dicebear.com/7.x/adventurer/svg?seed=${firebaseUser.uid}`,
+          suggestedUsername: suggestedUsername
+        });
+        setAuthUsername(suggestedUsername);
+        setAuthName(firebaseUser.displayName || '');
+        setUnauthScreen('complete-profile');
+      }
+    } catch (err) {
+      if (err.message && err.message.includes('auth/popup-closed-by-user')) {
+        // User closed popup
+        return;
+      }
+      setAuthError('Google-Anmeldung fehlgeschlagen: ' + err.message);
+    }
+  };
+
+  const handleCompleteGoogleProfile = async (e) => {
+    e.preventDefault();
+    setAuthError('');
+
+    if (!authUsername.trim()) {
+      setAuthError('Bitte gib einen Benutzernamen ein.');
+      return;
+    }
+    if (!authName.trim()) {
+      setAuthError('Bitte gib deinen Namen ein.');
+      return;
+    }
+
+    try {
+      const usernameUnique = await checkUsernameUnique(authUsername);
+      if (!usernameUnique) {
+        setAuthError('Dieser Benutzername ist bereits vergeben.');
+        return;
+      }
+
+      const user = await createUserProfile(
+        googleAuthData.uid,
+        authUsername.trim(),
+        authName.trim(),
+        googleAuthData.email,
+        null,
+        googleAuthData.avatar
+      );
+
+      setCurrentUser(user);
+      setEmailVerified(auth.currentUser?.emailVerified || false);
+      setCurrentScreen('dashboard');
+      
+      setGoogleAuthData(null);
+      setAuthUsername('');
+      setAuthName('');
+      setUnauthScreen('landing');
+    } catch (err) {
+      setAuthError(err.message);
+    }
+  };
+
+  const handleCancelGoogleRegistration = async () => {
+    try {
+      await logoutUser();
+    } catch (err) {
+      console.error('Sign out failed', err);
+    }
+    setGoogleAuthData(null);
+    setAuthUsername('');
+    setAuthName('');
+    setUnauthScreen('auth');
+  };
+
   const handleRollAvatar = () => {
     setIsRolling(true);
     const randomSeed = Math.random().toString(36).substring(2, 10);
@@ -559,8 +700,9 @@ export default function PhoneView({ defaultUser, phoneName }) {
     try {
       const updates = {
         name: settingsName.trim(),
-        email: settingsEmail.trim() || null,
+        email: currentUser.email || null,
         phoneNumber: settingsPhone.trim() || null,
+        payPalMe: settingsPayPalMe.trim() || null,
         avatar: settingsAvatar
       };
       
@@ -649,9 +791,26 @@ export default function PhoneView({ defaultUser, phoneName }) {
     } else {
       setTxAmount('');
       setTxDescription('');
+      setLendDirection('give');
     }
     
     setSheetOpen(true);
+  };
+
+  const handlePayPalPay = () => {
+    setTxError('');
+    const parsedAmount = parseFloat(txAmount.replace(',', '.'));
+    if (isNaN(parsedAmount) || parsedAmount <= 0) {
+      setTxError('Bitte gib einen gültigen Betrag größer als 0 ein.');
+      return;
+    }
+    if (!selectedFriend?.payPalMe) {
+      setTxError('Der Empfänger hat keinen PayPal.me Link hinterlegt.');
+      return;
+    }
+    const recipient = selectedFriend.payPalMe.trim();
+    const url = `https://paypal.me/${recipient}/${parsedAmount.toFixed(2)}`;
+    window.open(url, '_blank', 'noopener,noreferrer');
   };
 
   const handleCreateTransaction = async (e) => {
@@ -668,8 +827,14 @@ export default function PhoneView({ defaultUser, phoneName }) {
 
     try {
       if (sheetType === 'lend') {
-        // Current user lends money to the friend: Current user is Lender, Friend is Borrower
-        await addTransaction(currentUser.id, selectedFriend.id, parsedAmount, txDescription || 'Geld geliehen', finalImgUrl, 'pending', currentUser.id);
+        if (lendDirection === 'give') {
+          // Current user lends money to the friend: Current user is Lender, Friend is Borrower
+          await addTransaction(currentUser.id, selectedFriend.id, parsedAmount, txDescription || 'Geld geliehen', finalImgUrl, 'pending', currentUser.id);
+        } else {
+          // Friend lends money to current user: Friend is Lender, Current user is Borrower
+          // Since the borrower is recording the transaction, the lender (friend) must confirm it.
+          await addTransaction(selectedFriend.id, currentUser.id, parsedAmount, txDescription || 'Geld geliehen', finalImgUrl, 'pending', currentUser.id);
+        }
       } else {
         // Settle debt
         const balance = getBalanceBetween(currentUser.id, selectedFriend.id);
@@ -751,7 +916,7 @@ export default function PhoneView({ defaultUser, phoneName }) {
     }
   };
 
-  const handleNudge = () => {
+  const handleNudge = async () => {
     if (!currentUser || !selectedFriend) return;
     
     const SYNC_CHANNEL_NAME = 'dept_manager_sync';
@@ -763,6 +928,12 @@ export default function PhoneView({ defaultUser, phoneName }) {
       toUserId: selectedFriend.id
     });
     channel.close();
+
+    try {
+      await createNudge(currentUser.id, selectedFriend.id);
+    } catch (pushErr) {
+      console.warn('Could not create nudge document in Firestore:', pushErr);
+    }
 
     setToastMessage(`⚡ Du hast ${selectedFriend.name} angestupst!`);
     setShowToast(true);
@@ -1025,6 +1196,22 @@ export default function PhoneView({ defaultUser, phoneName }) {
           </button>
         </form>
 
+        <div className="auth-divider">oder</div>
+
+        <button 
+          type="button" 
+          className="btn-google" 
+          onClick={handleGoogleLogin}
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" style={{ marginRight: '0.25rem' }}>
+            <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+            <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+            <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
+            <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
+          </svg>
+          Mit Google anmelden
+        </button>
+
         <div className="auth-switch">
           {isRegisterMode ? 'Bereits ein Konto?' : 'Noch kein Konto?'}
           <button 
@@ -1086,6 +1273,76 @@ export default function PhoneView({ defaultUser, phoneName }) {
             Abmelden
           </button>
         </div>
+      </div>
+    );
+  };
+
+  const renderCompleteProfileScreen = () => {
+    return (
+      <div className="auth-container animate-fade-in" style={{ padding: '2rem' }}>
+        <div className="auth-header" style={{ marginBottom: '1.75rem' }}>
+          <div className="auth-logo" style={{ fontSize: '2.5rem', marginBottom: '1rem', background: 'rgba(99, 102, 241, 0.1)', width: '70px', height: '70px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '20px', margin: '0 auto 1rem auto', border: '1px solid rgba(99, 102, 241, 0.2)', color: '#6366f1' }}>
+            <UserCircle size={40} />
+          </div>
+          <h2 className="auth-title" style={{ fontSize: '1.5rem', fontWeight: 700, marginBottom: '0.5rem', fontFamily: 'var(--font-heading)' }}>Profil vervollständigen</h2>
+          <p className="auth-subtitle" style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: '1.5' }}>
+            Wähle einen Benutzernamen, um dein Konto fertigzustellen. Andere können dich über diesen Namen hinzufügen.
+          </p>
+        </div>
+
+        <form onSubmit={handleCompleteGoogleProfile} className="auth-form" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+          {authError && <div className="error-banner">{authError}</div>}
+          
+          <div className="input-wrapper">
+            <label className="input-label">E-Mail-Adresse</label>
+            <input 
+              type="email" 
+              className="input-field" 
+              value={googleAuthData?.email || ''} 
+              disabled 
+              style={{ opacity: 0.6, cursor: 'not-allowed' }}
+            />
+          </div>
+
+          <div className="input-wrapper">
+            <label className="input-label">Benutzername (eindeutig)</label>
+            <input 
+              type="text" 
+              placeholder="z.B. maxmustermann" 
+              className="input-field"
+              value={authUsername}
+              onChange={(e) => setAuthUsername(e.target.value.toLowerCase().replace(/[^a-z0-9._-]/g, ''))}
+              required
+            />
+          </div>
+
+          <div className="input-wrapper">
+            <label className="input-label">Vollständiger Name</label>
+            <input 
+              type="text" 
+              placeholder="z.B. Max Mustermann" 
+              className="input-field"
+              value={authName}
+              onChange={(e) => setAuthName(e.target.value)}
+              required
+            />
+          </div>
+
+          <button type="submit" className="btn-primary" style={{ width: '100%', height: '46px', gap: '0.5rem', marginTop: '0.5rem' }}>
+            <Check size={18} />
+            Registrierung abschließen
+          </button>
+
+          <button 
+            type="button" 
+            className="btn-secondary" 
+            onClick={handleCancelGoogleRegistration}
+            style={{ width: '100%', height: '46px', background: 'rgba(239, 68, 68, 0.08)', color: '#ef4444', border: '1px solid rgba(239, 68, 68, 0.15)', gap: '0.5rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          >
+            <LogOut size={16} />
+            Abbrechen & Abmelden
+          </button>
+        </form>
       </div>
     );
   };
@@ -1176,13 +1433,12 @@ export default function PhoneView({ defaultUser, phoneName }) {
             </div>
 
             <div className="input-wrapper">
-              <label className="input-label">E-Mail-Adresse</label>
+              <label className="input-label">E-Mail-Adresse (nicht änderbar)</label>
               <input 
                 type="email" 
-                placeholder="name@beispiel.com" 
-                className="input-field"
-                value={settingsEmail}
-                onChange={e => setSettingsEmail(e.target.value)}
+                className="input-field disabled" 
+                value={currentUser.email || ''} 
+                disabled 
               />
             </div>
 
@@ -1195,6 +1451,30 @@ export default function PhoneView({ defaultUser, phoneName }) {
                 value={settingsPhone}
                 onChange={e => setSettingsPhone(e.target.value)}
               />
+            </div>
+
+            <div className="input-wrapper">
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+                <label className="input-label">PayPal.me Link (Name)</label>
+                <a 
+                  href="https://www.paypal.com/paypalme/" 
+                  target="_blank" 
+                  rel="noopener noreferrer" 
+                  className="settings-helper-link"
+                >
+                  Link bei PayPal finden ↗
+                </a>
+              </div>
+              <input 
+                type="text" 
+                placeholder="z.B. maxmustermann" 
+                className="input-field"
+                value={settingsPayPalMe}
+                onChange={e => setSettingsPayPalMe(e.target.value.replace(/[^a-zA-Z0-9._-]/g, ''))}
+              />
+              <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginTop: '-0.25rem', opacity: 0.8 }}>
+                Nur den Namen eingeben (ohne paypal.me/). Ermöglicht direkte Zahlungen unter Freunden.
+              </span>
             </div>
 
             <div className="settings-actions-group">
@@ -1839,14 +2119,14 @@ export default function PhoneView({ defaultUser, phoneName }) {
               // lenderId is the one who lent the money. 
               // If lenderId == currentUser, it's outgoing (Alice lent to Bob, or Bob borrowed from Alice)
               // If lenderId == friend, it's incoming (Bob lent to Alice)
-              const isOutgoing = tx.lenderId === currentUser.id;
+              const isOutgoing = tx.lenderId.toLowerCase() === currentUser.id.toLowerCase();
               
               // Detect if this transaction description represents a settlement
               const isSettle = tx.description.includes('Schulden beglichen') || tx.description.includes('🤝');
 
               const isPending = tx.status === 'pending';
               const isRejected = tx.status === 'rejected';
-              const isCreator = tx.createdBy === currentUser.id;
+              const isCreator = (tx.createdBy || '').toLowerCase() === currentUser.id.toLowerCase();
 
               return (
                 <div 
@@ -1864,17 +2144,23 @@ export default function PhoneView({ defaultUser, phoneName }) {
                         isOutgoing ? (
                           <>
                             <ArrowUpRight size={12} style={{color: 'var(--color-credit)'}} />
-                            Geliehen
+                            Verliehen
                           </>
                         ) : (
                           <>
                             <ArrowDownLeft size={12} style={{color: 'var(--color-debt)'}} />
-                            Gekriegt
+                            Geliehen bekommen
                           </>
                         )
                       )}
                     </div>
-                    <div className="bubble-desc">{tx.description}</div>
+                    <div className="bubble-desc">
+                      {tx.description === 'Geld geliehen' ? (
+                        isOutgoing ? 'Geld verliehen' : 'Geld geliehen bekommen'
+                      ) : (
+                        tx.description
+                      )}
+                    </div>
                     <div className="bubble-amount-row">
                       <div className="bubble-amount">
                         {isSettle 
@@ -2277,7 +2563,12 @@ export default function PhoneView({ defaultUser, phoneName }) {
               <div className="chat-user-header-info">
                 <span className="user-meta-name">{selectedFriend.name}</span>
                 <span className={`chat-user-balance-sub ${getBalanceBetween(currentUser.id, selectedFriend.id).status}`}>
-                  {(() => { const b = getBalanceBetween(currentUser.id, selectedFriend.id); return formatBalance(b.amount, b.status); })()}
+                  {(() => {
+                    const b = getBalanceBetween(currentUser.id, selectedFriend.id);
+                    if (b.status === 'credit') return `${selectedFriend.name} schuldet dir ${formatCurrency(b.amount)}`;
+                    if (b.status === 'debt') return `Du schuldest ${selectedFriend.name} ${formatCurrency(b.amount)}`;
+                    return 'Ausgeglichen';
+                  })()}
                 </span>
               </div>
             </div>
@@ -2366,6 +2657,10 @@ export default function PhoneView({ defaultUser, phoneName }) {
       ) : (
         unauthScreen === 'landing' ? (
           renderLandingPage()
+        ) : unauthScreen === 'complete-profile' ? (
+          <div className="web-auth-wrapper">
+            {renderCompleteProfileScreen()}
+          </div>
         ) : (
           <div className="web-auth-wrapper">
             {renderAuthScreen()}
@@ -2381,11 +2676,29 @@ export default function PhoneView({ defaultUser, phoneName }) {
           <div className="bottom-sheet">
             <div className="sheet-handle"></div>
             <div className="sheet-header">
-              <h3 className="sheet-title">{sheetType === 'lend' ? 'Geld geliehen (+)' : 'Schulden begleichen (-)'}</h3>
+              <h3 className="sheet-title">{sheetType === 'lend' ? 'Geld eintragen' : 'Schulden begleichen (-)'}</h3>
               <button className="icon-btn" onClick={() => setSheetOpen(false)}><X size={16} /></button>
             </div>
             <form onSubmit={handleCreateTransaction} className="sheet-body">
               {txError && <div className="error-banner">{txError}</div>}
+              {sheetType === 'lend' && (
+                <div className="segmented-control-wrapper">
+                  <button
+                    type="button"
+                    className={`segmented-control-btn lend ${lendDirection === 'give' ? 'active' : ''}`}
+                    onClick={() => setLendDirection('give')}
+                  >
+                    Ich habe verliehen
+                  </button>
+                  <button
+                    type="button"
+                    className={`segmented-control-btn borrow ${lendDirection === 'take' ? 'active' : ''}`}
+                    onClick={() => setLendDirection('take')}
+                  >
+                    Geliehen bekommen
+                  </button>
+                </div>
+              )}
               <div className="amount-input-container">
                 <span className="amount-currency">€</span>
                 <input type="text" placeholder="0,00" className="amount-input" value={txAmount} onChange={e => setTxAmount(e.target.value)} autoFocus />
@@ -2417,6 +2730,19 @@ export default function PhoneView({ defaultUser, phoneName }) {
                 <input type="text" placeholder={sheetType === 'lend' ? 'z.B. Pizza 🍕' : 'z.B. Schulden ausgeglichen 🤝'} className="input-field" value={txDescription} onChange={e => setTxDescription(e.target.value)} />
               </div>
               <button type="submit" className="btn-primary" style={{ marginTop: '0.5rem' }}>Eintragen</button>
+              {sheetType === 'settle' && selectedFriend?.payPalMe && (
+                <button 
+                  type="button" 
+                  className="btn-paypal-direct" 
+                  onClick={handlePayPalPay}
+                >
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" style={{ marginRight: '0.25rem' }}>
+                    <path d="M20.007 8.046c-.23 2.146-1.575 4.394-4.521 4.394h-2.585c-.476 0-.895.328-.992.793l-1.353 6.47c-.053.256-.279.435-.54.435h-3.41c-.37 0-.638-.358-.553-.717L9.362 6.042c.097-.465.516-.793.992-.793h4.639c2.946 0 5.244 1.488 5.014 2.797z" fill="#FFF"/>
+                    <path d="M16.143 4.354c-.23 2.146-1.575 4.394-4.521 4.394H9.037c-.476 0-.895.328-.992.793L6.692 15.992c-.053.256-.279.435-.54.435H2.71c-.37 0-.638-.358-.553-.717L5.474 2.384c.097-.465.516-.793.992-.793h4.639c2.947 0 5.267 1.455 5.038 2.763z" fill="#FFC439"/>
+                  </svg>
+                  Mit PayPal.me bezahlen
+                </button>
+              )}
             </form>
           </div>
         </>

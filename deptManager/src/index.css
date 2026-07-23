@@ -407,6 +407,111 @@ body {
   text-decoration: underline;
 }
 
+.auth-divider {
+  display: flex;
+  align-items: center;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin: 1rem 0;
+  opacity: 0.6;
+}
+
+.auth-divider::before,
+.auth-divider::after {
+  content: '';
+  flex: 1;
+  border-bottom: 1px solid var(--border-glass);
+}
+
+.auth-divider:not(:empty)::before {
+  margin-right: .75em;
+}
+
+.auth-divider:not(:empty)::after {
+  margin-left: .75em;
+}
+
+.btn-google {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-glass);
+  color: var(--text-primary);
+  padding: 0.95rem;
+  border-radius: 12px;
+  font-family: var(--font-body);
+  font-weight: 700;
+  font-size: 0.95rem;
+  cursor: pointer;
+  transition: all 0.3s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  width: 100%;
+}
+
+.btn-google:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.15);
+  transform: translateY(-2px);
+}
+
+.btn-google:active {
+  transform: translateY(0);
+}
+
+.btn-paypal-direct {
+  background: linear-gradient(135deg, #0070ba, #154674);
+  border: none;
+  color: #ffffff;
+  padding: 0.95rem;
+  border-radius: 12px;
+  font-family: var(--font-body);
+  font-weight: 700;
+  font-size: 0.95rem;
+  cursor: pointer;
+  box-shadow: 0 4px 15px rgba(0, 112, 186, 0.25);
+  transition: all 0.3s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  width: 100%;
+  margin-top: 0.85rem;
+}
+
+.btn-paypal-direct:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(0, 112, 186, 0.4);
+  background: linear-gradient(135deg, #0079c1, #1a568c);
+}
+
+.btn-paypal-direct:active {
+  transform: translateY(0);
+}
+
+.settings-helper-link {
+  font-size: 0.75rem;
+  color: var(--color-primary);
+  font-weight: 600;
+  text-decoration: none;
+  align-self: flex-start;
+  margin-top: 0.2rem;
+  transition: all 0.2s;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.settings-helper-link:hover {
+  color: var(--color-primary-hover);
+  text-decoration: underline;
+}
+
 .error-banner {
   background: var(--color-debt-bg);
   border: 1px solid rgba(244, 63, 94, 0.2);
@@ -3090,6 +3195,50 @@ body {
     left: 1rem;
   }
 }
+
+/* Segmented Control for Lend/Borrow direction */
+.segmented-control-wrapper {
+  display: flex;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-glass);
+  border-radius: 12px;
+  padding: 3px;
+  margin-bottom: 1.25rem;
+  width: 100%;
+}
+
+.segmented-control-btn {
+  flex: 1;
+  background: transparent;
+  border: none;
+  border-radius: 9px;
+  padding: 0.6rem 0.5rem;
+  font-family: var(--font-body);
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  text-align: center;
+}
+
+.segmented-control-btn:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.segmented-control-btn.lend.active {
+  background: var(--color-credit);
+  color: #fff;
+  box-shadow: 0 4px 12px var(--color-credit-glow);
+}
+
+.segmented-control-btn.borrow.active {
+  background: var(--color-debt);
+  color: #fff;
+  box-shadow: 0 4px 12px var(--color-debt-glow);
+}
+
 
 
 
